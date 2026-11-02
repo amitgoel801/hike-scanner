@@ -29,6 +29,13 @@
             </intent-filter>
         </activity>
 
+        <!-- Request OBD (open box delivery) for packets the courier has scanned -->
+        <activity
+            android:name=".ObdActivity"
+            android:exported="false"
+            android:configChanges="orientation|screenSize|screenLayout|keyboard|keyboardHidden|navigation|uiMode"
+            android:windowSoftInputMode="stateAlwaysHidden|adjustResize" />
+
         <!-- "Connect this device": opened by the QR page in the phone browser (hikescan://pair?c=...) -->
         <activity
             android:name=".LoginActivity"

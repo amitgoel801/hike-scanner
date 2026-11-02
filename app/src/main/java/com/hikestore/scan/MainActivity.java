@@ -1288,22 +1288,23 @@ public class MainActivity extends Activity {
     }
 
     private void menu() {
-        final String[] items = {"⟳ Refresh list from Flipkart", "＋ Start new task", "↺ Reopen a finished task", "🕘 History",
+        final String[] items = {"📭 Request OBD (open box)", "⟳ Refresh list from Flipkart", "＋ Start new task", "↺ Reopen a finished task", "🕘 History",
                 "📋 Not received yet", "⚠ Report a problem packet", "📱 This device", "⇪ Send this phone's scans again",
                 "Disconnect this device"};
         new AlertDialog.Builder(this).setTitle("Hike Scan " + AppInfo.VERSION_NAME + " · 📱 " + Api.deviceName())
                 .setItems(items, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         switch (w) {
-                            case 0: syncFlipkart(); break;
-                            case 1: newTask(); break;
-                            case 2: reopenTask(); break;
-                            case 3: history("task", "all"); break;
-                            case 4: history("day", "missing"); break;
-                            case 5: Problems.start(MainActivity.this, loc, day, "", "", me); break;
-                            case 6: deviceSettings(); break;
-                            case 7: resendAll(); break;
-                            case 8: logout(); break;
+                            case 0: ObdActivity.start(MainActivity.this, loc, day, locName()); break;
+                            case 1: syncFlipkart(); break;
+                            case 2: newTask(); break;
+                            case 3: reopenTask(); break;
+                            case 4: history("task", "all"); break;
+                            case 5: history("day", "missing"); break;
+                            case 6: Problems.start(MainActivity.this, loc, day, "", "", me); break;
+                            case 7: deviceSettings(); break;
+                            case 8: resendAll(); break;
+                            case 9: logout(); break;
                         }
                     }
                 }).show();
