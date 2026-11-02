@@ -24,24 +24,39 @@ jobs:
           gradle-version: '8.9'
 
       - name: Signing key from secrets
+        id: key
         env:
           KS_B64: ${{ secrets.KS_B64 }}
         run: |
-          if [ -z "$KS_B64" ]; then echo "Secret KS_B64 is missing"; exit 1; fi
-          echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+          if [ -z "$KS_B64" ]; then
+            echo "::warning::Secret KS_B64 is missing - building a TEST (debug) APK only"
+            echo "have=no" >> "$GITHUB_OUTPUT"
+          else
+            echo "$KS_B64" | base64 -d > "$RUNNER_TEMP/release.jks"
+            echo "have=yes" >> "$GITHUB_OUTPUT"
+          fi
 
       - name: Build release APK
+        if: steps.key.outputs.have == 'yes'
         env:
           KS_FILE: ${{ runner.temp }}/release.jks
           KS_PASS: ${{ secrets.KS_PASS }}
           KS_ALIAS: hikescan
         run: gradle :app:assembleRelease --no-daemon --stacktrace
 
+      - name: Build test APK (no signing key yet)
+        if: steps.key.outputs.have != 'yes'
+        run: gradle :app:assembleDebug --no-daemon --stacktrace
+
       - name: Name the APK
         run: |
           V=$(grep -oP "versionName '\K[^']+" app/build.gradle)
           mkdir -p out
-          cp app/build/outputs/apk/release/app-release.apk "out/HikeScan-$V.apk"
+          if [ -f app/build/outputs/apk/release/app-release.apk ]; then
+            cp app/build/outputs/apk/release/app-release.apk "out/HikeScan-$V.apk"
+          else
+            cp app/build/outputs/apk/debug/app-debug.apk "out/HikeScan-$V-TEST.apk"
+          fi
           ls -la out
 
       - uses: actions/upload-artifact@v4
