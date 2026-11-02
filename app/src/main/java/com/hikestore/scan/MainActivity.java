@@ -664,6 +664,23 @@ public class MainActivity extends Activity {
         return null;
     }
 
+    /** already scanned OK - by tracking number, or by order item (other barcode of the same label) */
+    private Item okForPacket(JSONObject p) {
+        Item f = okFor(p.optString("t"));
+        if (f != null) return f;
+        Set<String> ois = new HashSet<>();
+        JSONArray a = p.optJSONArray("i");
+        if (a != null) for (int k = 0; k < a.length(); k++) { String oi = a.optJSONObject(k).optString("oi"); if (!oi.isEmpty()) ois.add(oi); }
+        if (ois.isEmpty()) return null;
+        for (Item i : scans) {
+            if (!"ok".equals(i.res) || i.tracking.isEmpty()) continue;
+            JSONObject q = packets.get(i.tracking);
+            JSONArray b = q != null ? q.optJSONArray("i") : null;
+            if (b != null) for (int k = 0; k < b.length(); k++) if (ois.contains(b.optJSONObject(k).optString("oi"))) return i;
+        }
+        return null;
+    }
+
     // ================================================================== scanning
     private String normalize(String raw) {
         String c = raw == null ? "" : raw.trim();
@@ -699,7 +716,7 @@ public class MainActivity extends Activity {
         if (code.length() < min || !CODE_OK.matcher(code).matches()) res = "rescan";
         else {
             p = localMatch(code);
-            if (p != null) { first = okFor(p.optString("t")); res = first != null ? "duplicate" : "ok"; }
+            if (p != null) { first = okForPacket(p); res = first != null ? "duplicate" : "ok"; }
             else {
                 boolean seenNf = false;
                 for (Item i : scans) if ("not_found".equals(i.res) && code.equals(i.code)) { seenNf = true; break; }
