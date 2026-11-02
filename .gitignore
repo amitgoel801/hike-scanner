@@ -6,3 +6,4 @@ local.properties
 .idea/
 *.iml
 icon_512.png
+!app/test-debug.keystore

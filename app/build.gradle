@@ -11,11 +11,19 @@ android {
         minSdk 21            // Android 5.0 and newer (incl. Android 11 / 12 handhelds)
         targetSdk 34
         // keep in step with AppInfo.java
-        versionCode 2
-        versionName '1.1'
+        versionCode 3
+        versionName '1.2'
     }
 
     signingConfigs {
+        // TEST builds: one fixed test key in the repo, so a new TEST build installs over the old one
+        // (before this, every GitHub build made its own key and the old app had to be uninstalled)
+        debug {
+            storeFile file('test-debug.keystore')
+            storePassword 'android'
+            keyAlias 'androiddebugkey'
+            keyPassword 'android'
+        }
         release {
             // the signing key lives in GitHub secrets (never in the code) - same key for every
             // build, so a new version installs over the old one and keeps the scans on the phone
@@ -27,6 +35,9 @@ android {
     }
 
     buildTypes {
+        debug {
+            signingConfig signingConfigs.debug
+        }
         release {
             minifyEnabled false
             signingConfig signingConfigs.release
