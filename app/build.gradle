@@ -1,0 +1,45 @@
+plugins {
+    id 'com.android.application'
+}
+
+android {
+    namespace 'com.hikestore.scan'
+    compileSdk 34
+
+    defaultConfig {
+        applicationId 'com.hikestore.scan'
+        minSdk 21            // Android 5.0 and newer (incl. Android 11 / 12 handhelds)
+        targetSdk 34
+        // keep in step with AppInfo.java
+        versionCode 1
+        versionName '1.0'
+    }
+
+    signingConfigs {
+        release {
+            // the signing key lives in GitHub secrets (never in the code) - same key for every
+            // build, so a new version installs over the old one and keeps the scans on the phone
+            storeFile file(System.getenv('KS_FILE') ?: 'missing.jks')
+            storePassword System.getenv('KS_PASS') ?: ''
+            keyAlias System.getenv('KS_ALIAS') ?: 'hikescan'
+            keyPassword System.getenv('KS_PASS') ?: ''
+        }
+    }
+
+    buildTypes {
+        release {
+            minifyEnabled false
+            signingConfig signingConfigs.release
+        }
+    }
+
+    compileOptions {
+        sourceCompatibility JavaVersion.VERSION_1_8
+        targetCompatibility JavaVersion.VERSION_1_8
+    }
+
+    lint {
+        abortOnError false
+        checkReleaseBuilds false
+    }
+}
