@@ -1087,7 +1087,9 @@ public class MainActivity extends Activity {
             m.setPadding(Ui.dp(12), Ui.dp(4), Ui.dp(12), Ui.dp(8));
             c.addView(m);
         } else {
-            TextView m = Ui.text(this, "rescan".equals(it.res) ? "The code could not be read properly. Scan the label again."
+            boolean square = "rescan".equals(it.res) && it.code.split("\\|").length > 3;   // Ekart's square (Data Matrix) code
+            TextView m = Ui.text(this, square ? "That was the square code on the label. It only has the courier's routing details, not the tracking number. Scan the long barcode at the bottom of the label (FMPP… / FMPC… / FMPR…) or the AWB barcode."
+                    : "rescan".equals(it.res) ? "The code could not be read properly. Scan the label again."
                     : "This packet is not in Flipkart's list for this location. Keep it aside - it is saved and checked again when the list refreshes.", 13, Ui.INK2, false);
             m.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
             c.addView(m);
