@@ -68,6 +68,7 @@ public final class Store extends SQLiteOpenHelper {
     public synchronized void markUndone(String cid) {
         ContentValues v = new ContentValues();
         v.put("server_res", "undone");
+        v.put("sent", 1);
         getWritableDatabase().update("scans", v, "cid=?", new String[]{cid});
     }
 

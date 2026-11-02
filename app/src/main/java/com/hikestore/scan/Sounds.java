@@ -28,6 +28,7 @@ public final class Sounds {
         pcm.put("double", build(new double[][]{{2300, 0, .07, 1, .35}, {2300, .11, .07, 1, .35}}));
         pcm.put("error", build(new double[][]{{170, 0, .22, 1, .8}, {170, .30, .22, 1, .8}, {140, .60, .35, 1, .8}}));
         pcm.put("warn", build(new double[][]{{880, 0, .5, 2, .55, 300}, {880, .6, .5, 2, .55, 300}}));
+        pcm.put("multi", build(new double[][]{{1500, 0, .12, 1, .4}, {2000, .16, .12, 1, .4}, {2600, .32, .18, 1, .4}}));
         pcm.put("rescan", build(new double[][]{{700, 0, .07, 1, .5}, {700, .12, .07, 1, .5}, {700, .24, .07, 1, .5}}));
     }
 
@@ -87,6 +88,8 @@ public final class Sounds {
             case "duplicate": p = new long[]{0, 250, 90, 250, 90, 250}; break;
             case "not_found": p = new long[]{0, 500, 120, 500}; break;
             case "rescan": p = new long[]{0, 80, 60, 80, 60, 80}; break;
+            case "multi": p = new long[]{0, 60, 60, 60, 60, 200}; break;
+            case "bag": p = new long[]{0, 120, 80, 120}; break;
             default: p = new long[]{0, 40};
         }
         try { vib.vibrate(p, -1); } catch (Exception ignored) { }

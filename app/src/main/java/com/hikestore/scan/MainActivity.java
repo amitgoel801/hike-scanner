@@ -70,8 +70,10 @@ public class MainActivity extends Activity {
     private String loc = "", day = "", psig = "";
     private final Map<String, JSONObject> packets = new LinkedHashMap<>();
     private final Map<String, String> index = new HashMap<>();
+    private final Map<String, Integer> bags = new HashMap<>();     // courier bag label -> packets inside
     private JSONArray serverScans = new JSONArray(), batches = new JSONArray();
-    private JSONObject batch = null, issues = new JSONObject(), lastSync = null, syncRow = null;
+    private JSONObject batch = null, issues = new JSONObject(), lastSync = null, syncRow = null, syncProg = null;
+    private boolean syncing = false;
     private List<Item> scans = new ArrayList<>();          // merged: server + this phone, oldest first
     private Item last;
     private boolean sending = false, online = true, loginNeeded = false;
@@ -143,6 +145,7 @@ public class MainActivity extends Activity {
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
         Api.init(this);
+        Images.init(this);
         Ui.init(this);
         if (!Api.loggedIn()) { toLogin(null); return; }
         store = Store.get(this);
@@ -172,7 +175,19 @@ public class MainActivity extends Activity {
         refresh(true);
         ui.postDelayed(ticker, 30000);
         ui.postDelayed(sender, 1500);
+        ui.postDelayed(photoTick, 3000);
     }
+
+    /** keeps "1,200 of 2,097 photos saved on phone" moving while photos download */
+    private boolean photoLine = false;
+    private final Runnable photoTick = new Runnable() {
+        @Override public void run() {
+            boolean now = Images.progress() != null;
+            if (now || photoLine) renderTop();
+            photoLine = now;
+            ui.postDelayed(this, 3000);
+        }
+    };
 
     @Override protected void onResume() {
         super.onResume();
@@ -483,9 +498,15 @@ public class MainActivity extends Activity {
         if (p != null) {
             packets.clear();
             index.clear();
+            bags.clear();
+            List<String> photos = new ArrayList<>();
             for (int i = 0; i < p.length(); i++) {
                 JSONObject o = p.optJSONObject(i);
                 packets.put(o.optString("t"), o);
+                String bg = o.optString("bg").toUpperCase();
+                if (!bg.isEmpty()) bags.put(bg, (bags.containsKey(bg) ? bags.get(bg) : 0) + 1);
+                JSONArray its = o.optJSONArray("i");
+                if (its != null) for (int k = 0; k < its.length(); k++) photos.add(its.optJSONObject(k).optString("im"));
                 addKey(o.optString("t"), o.optString("t"));
                 addKey(o.optString("r"), o.optString("t"));
                 addKey(o.optString("o"), o.optString("t"));
@@ -497,13 +518,18 @@ public class MainActivity extends Activity {
                 }
             }
             psig = st.optString("psig", "");
+            if (save) Images.prefetch(photos);           // keep every photo on the phone (works offline)
         }
+        JSONArray trash = st.optJSONArray("trash_cids");   // scans an admin cleared / undid
+        if (trash != null) for (int i = 0; i < trash.length(); i++) store.markUndone(trash.optString(i));
         serverScans = st.optJSONArray("scans") != null ? st.optJSONArray("scans") : new JSONArray();
         batches = st.optJSONArray("batches") != null ? st.optJSONArray("batches") : new JSONArray();
         batch = st.optJSONObject("batch");
         issues = st.optJSONObject("issues") != null ? st.optJSONObject("issues") : new JSONObject();
         lastSync = st.optJSONObject("last_ok_sync");
         syncRow = st.optJSONObject("sync");
+        syncing = st.optBoolean("syncing");
+        syncProg = st.optJSONObject("sync_progress");
         if (save) {
             try {
                 JSONObject copy = new JSONObject(st.toString());
@@ -558,16 +584,38 @@ public class MainActivity extends Activity {
             @Override public void run() {
                 try {
                     JSONObject a = new JSONObject();
-                    a.put("loc", l); a.put("day", d);
+                    a.put("loc", l); a.put("day", d); a.put("background", true);
                     final JSONObject r = Api.post("/api/sync", a);
-                    ui.post(new Runnable() {
-                        @Override public void run() {
-                            if (!r.optBoolean("ok")) { toast("Flipkart: " + r.optString("error")); return; }
-                            JSONObject res = r.optJSONObject("result");
-                            toast("List updated: " + (res != null ? res.optInt("packets") : 0) + " packets");
-                            refresh(true);
+                    if (!r.optBoolean("ok")) { toastBg("Flipkart: " + r.optString("error")); return; }
+                    // 2,000+ packets take a few minutes: the server works in the background, we watch the progress
+                    double t0 = System.currentTimeMillis() / 1000.0 - 2;
+                    boolean seen = false;
+                    for (int i = 0; i < 400; i++) {
+                        Thread.sleep(i < 3 ? 1500 : 3000);
+                        final JSONObject st = Api.get("/api/state?loc=" + Api.encode(l) + "&day=" + d + "&psig=" + Api.encode(psig));
+                        if (!st.optBoolean("ok")) continue;
+                        ui.post(new Runnable() {
+                            @Override public void run() {
+                                if (!l.equals(loc) || !d.equals(day)) return;
+                                syncing = st.optBoolean("syncing");
+                                syncProg = st.optJSONObject("sync_progress");
+                                renderTop();
+                            }
+                        });
+                        if (st.optBoolean("syncing")) seen = true;
+                        JSONObject sr = st.optJSONObject("sync");
+                        if (!st.optBoolean("syncing") && (seen || (sr != null && sr.optDouble("at") >= t0) || i > 4)) {
+                            final JSONObject fin = sr;
+                            ui.post(new Runnable() {
+                                @Override public void run() {
+                                    if (fin != null && fin.optInt("ok") == 0) toast("Flipkart: " + fin.optString("message"));
+                                    else toast("List updated" + (fin != null ? ": " + fin.optInt("packets") + " packets" : ""));
+                                    refresh(true);
+                                }
+                            });
+                            break;
                         }
-                    });
+                    }
                 } catch (Api.LoginRequired e) { needLogin(); }
                 catch (Exception e) { toastBg("No network - try again"); }
             }
@@ -653,10 +701,11 @@ public class MainActivity extends Activity {
             else {
                 boolean seenNf = false;
                 for (Item i : scans) if ("not_found".equals(i.res) && code.equals(i.code)) { seenNf = true; break; }
-                res = seenNf ? "duplicate" : "not_found";
+                if (bags.containsKey(code)) res = "bag";
+                else res = seenNf ? "duplicate" : "not_found";
             }
         }
-        feedback(res);
+        feedback("ok".equals(res) && pieces(p) > 1 ? "multi" : res);
         // 1) save on the phone first
         Store.Scan s = new Store.Scan();
         s.cid = dev.getString("id", "x") + "-" + Long.toString(System.currentTimeMillis(), 36) + "-" + UUID.randomUUID().toString().substring(0, 5);
@@ -683,8 +732,20 @@ public class MainActivity extends Activity {
         sounds.buzz(res);
     }
 
+    /** pieces inside one packet: 2 items, or quantity 2+ */
+    static int pieces(JSONObject p) {
+        if (p == null) return 0;
+        JSONArray a = p.optJSONArray("i");
+        if (a == null) return 0;
+        int n = 0;
+        for (int k = 0; k < a.length(); k++) n += Math.max(1, a.optJSONObject(k).optInt("q", 1));
+        return n;
+    }
+
     private static String defaultSound(String res) {
         switch (res) {
+            case "multi": return "multi";
+            case "bag": return "double";
             case "duplicate": return "error";
             case "not_found": return "warn";
             case "rescan": return "rescan";
@@ -741,9 +802,16 @@ public class MainActivity extends Activity {
     private final Runnable lightRefresh = new Runnable() { @Override public void run() { refresh(false); } };
 
     private void confirmed(String cid, long sid, String sres, String local, JSONObject pk, JSONObject first) {
+        if ("undone".equals(sres)) {              // the admin cleared this scan: drop it here too
+            store.markUndone(cid);
+            for (int k = scans.size() - 1; k >= 0; k--) if (cid.equals(scans.get(k).cid)) scans.remove(k);
+            renderCounts(); renderPrev(); renderTask();
+            return;
+        }
         for (Item i : scans) if (cid.equals(i.cid)) { i.pending = false; i.id = sid; i.res = sres; }
         if (!sres.equals(local) && last != null && cid.equals(last.cid)) {
-            feedback(sres);                       // another phone scanned it first, or the list changed
+            JSONObject sp = pk != null ? fromServerPacket(pk) : null;
+            feedback("ok".equals(sres) && pieces(sp) > 1 ? "multi" : sres);   // another phone scanned it first, or the list changed
             Item f = null;
             if (first != null) { f = new Item(); f.at = first.optDouble("at"); f.by = first.optString("by"); }
             showResult(last, pk != null ? fromServerPacket(pk) : null, f);
@@ -777,10 +845,15 @@ public class MainActivity extends Activity {
         locText.setText("📦 " + locName() + " ▾");
         dayText.setText(day.equals(Ui.today()) ? "Today ▾" : Ui.day(day) + " ▾");
         String line;
-        if (lastSync != null) line = "Flipkart: " + lastSync.optInt("fk_ofd") + " out for delivery" +
-                (lastSync.optInt("fk_del") > 0 ? ", " + lastSync.optInt("fk_del") + " delivered" : "") + " · list " + Ui.time(lastSync.optDouble("at"));
+        int expN = 0;
+        for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && p.optInt("x") != 1) expN++;
+        if (lastSync != null) line = expN + " packets to scan · list " + Ui.time(lastSync.optDouble("at"));
         else line = "List not fetched from Flipkart yet - tap ⟳";
         if (syncRow != null && syncRow.optInt("ok", 1) == 0) line = "⚠ Last Flipkart refresh failed: " + syncRow.optString("message");
+        if (syncing) line = "⟳ Getting the list from Flipkart" + (syncProg != null && syncProg.optInt("total") > 0
+                ? " - " + syncProg.optInt("done") + " of " + syncProg.optInt("total") : "…");
+        String ph = Images.progress();
+        if (ph != null) line += " · 📷 " + ph;
         syncLine.setText(line);
     }
 
@@ -788,18 +861,21 @@ public class MainActivity extends Activity {
         if (cExp == null) return;
         int exp = 0, got = 0, older = 0, dup = 0;
         Set<String> gotSet = new HashSet<>(), nf = new HashSet<>();
-        for (JSONObject p : packets.values()) if (day.equals(p.optString("d"))) exp++;
+        int gotX = 0;
+        // "x" = Flipkart took the packet off today's list: not expected any more (still OK if scanned)
+        for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && p.optInt("x") != 1) exp++;
         for (Item i : scans) {
             if ("ok".equals(i.res) && !i.tracking.isEmpty() && gotSet.add(i.tracking)) {
                 JSONObject p = packets.get(i.tracking);
-                if (p != null && !day.equals(p.optString("d"))) older++; else got++;
+                if (p != null && !day.equals(p.optString("d"))) older++;
+                else { got++; if (p != null && p.optInt("x") == 1) gotX++; }
             }
             if ("not_found".equals(i.res)) nf.add(i.code);
             if ("duplicate".equals(i.res)) dup++;
         }
         cExp.setText(String.valueOf(exp));
         cGot.setText(older > 0 ? got + "+" + older : String.valueOf(got));
-        cLeft.setText(String.valueOf(Math.max(0, exp - got)));
+        cLeft.setText(String.valueOf(Math.max(0, exp - (got - gotX))));
         cExtra.setText(String.valueOf(nf.size()));
         cDup.setText(String.valueOf(dup));
     }
@@ -871,6 +947,7 @@ public class MainActivity extends Activity {
             case "ok": return Ui.OK;
             case "duplicate": return Ui.ERR;
             case "not_found": return Ui.WARN;
+            case "bag": return 0xFF2563EB;
             default: return Ui.GREY;
         }
     }
@@ -882,6 +959,7 @@ public class MainActivity extends Activity {
             case "not_found": return "NOT IN FLIPKART LIST";
             case "rescan": return "SCAN AGAIN";
             case "undone": return "UNDONE";
+            case "bag": return "BAG LABEL";
             default: return res;
         }
     }
@@ -922,6 +1000,7 @@ public class MainActivity extends Activity {
         if ("ok".equals(it.res)) head = "✔ OK";
         if ("duplicate".equals(it.res)) head = "✖ ALREADY SCANNED";
         if ("rescan".equals(it.res)) head = "↻ SCAN AGAIN";
+        if ("bag".equals(it.res)) head = "🛍 BAG LABEL - open the bag";
         LinearLayout hr = Ui.row(this);
         hr.setBackgroundColor(col);
         hr.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
@@ -931,6 +1010,13 @@ public class MainActivity extends Activity {
         if (first != null) right = "first " + Ui.time(first.at) + (first.by.isEmpty() ? "" : " by " + first.by);
         hr.addView(Ui.text(this, right, 12, Ui.WHITE, true));
         c.addView(hr);
+        int pc = "ok".equals(it.res) ? pieces(p) : 0;
+        if (pc > 1) {
+            TextView mb = Ui.text(this, "⚠ " + pc + " PIECES IN THIS PACKET - check all " + pc + " are inside", 15, Ui.WHITE, true);
+            mb.setBackgroundColor(0xFF7C3AED);
+            mb.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
+            c.addView(mb);
+        }
         int no = taskScans().indexOf(it) + 1;
         LinearLayout sl = Ui.row(this);
         sl.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), 0);
@@ -990,6 +1076,14 @@ public class MainActivity extends Activity {
                 ir.addView(t);
                 c.addView(ir);
             }
+        } else if ("bag".equals(it.res)) {
+            Integer n = bags.get(it.code);
+            TextView big = Ui.text(this, n != null ? n + (n == 1 ? " packet inside" : " packets inside") : "Courier bag", 26, 0xFF2563EB, true);
+            big.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), 0);
+            c.addView(big);
+            TextView m = Ui.text(this, "This is the label of a courier bag, not a packet. Open the bag and scan each packet inside. This scan is not counted.", 13, Ui.INK, false);
+            m.setPadding(Ui.dp(12), Ui.dp(4), Ui.dp(12), Ui.dp(8));
+            c.addView(m);
         } else {
             TextView m = Ui.text(this, "rescan".equals(it.res) ? "The code could not be read properly. Scan the label again."
                     : "This packet is not in Flipkart's list for this location. Keep it aside - it is saved and checked again when the list refreshes.", 13, Ui.INK2, false);
@@ -1252,7 +1346,7 @@ public class MainActivity extends Activity {
         Button test = Ui.button(this, "▶ Test sounds", false);
         test.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) {
-                final String[] r = {"ok", "duplicate", "not_found", "rescan"};
+                final String[] r = {"ok", "multi", "duplicate", "not_found", "rescan"};
                 boolean m = sounds.mute; sounds.mute = false;
                 for (int i = 0; i < r.length; i++) {
                     final int k = i;
