@@ -93,7 +93,7 @@ public class MainActivity extends Activity {
     private Button pauseBtn, finishBtn;
 
     private static final Pattern CODE_OK = Pattern.compile("^[A-Z0-9\\-_/.]+$");
-    private static final String[][] SCANNER_INTENTS = {
+    static final String[][] SCANNER_INTENTS = {
             {"com.symbol.datawedge.api.RESULT_ACTION", "com.symbol.datawedge.data_string"},
             {"com.hikestore.scan.SCAN", "com.symbol.datawedge.data_string"},
             {"com.honeywell.decode.intent.action.EDIT_DATA", "data"},
@@ -110,8 +110,8 @@ public class MainActivity extends Activity {
             {"com.android.serial.BARCODEPORT_RECEIVEDDATA_ACTION", "DATA"},
     };
 
-    private final BroadcastReceiver scanReceiver = new BroadcastReceiver() {
-        @Override public void onReceive(Context c, Intent i) {
+    /** the code a scanner sent as a broadcast (Zebra, Honeywell, Urovo, Newland, iData, Sunmi ...) */
+    static String readScan(Intent i) {
             String code = null;
             for (String[] s : SCANNER_INTENTS) {
                 if (s[0].equals(i.getAction())) {
@@ -129,6 +129,12 @@ public class MainActivity extends Activity {
                     if (o instanceof byte[]) { code = new String((byte[]) o); break; }
                 }
             }
+            return code;
+    }
+
+    private final BroadcastReceiver scanReceiver = new BroadcastReceiver() {
+        @Override public void onReceive(Context c, Intent i) {
+            String code = readScan(i);
             if (code != null) submit(code, "broadcast");
         }
     };
@@ -208,9 +214,12 @@ public class MainActivity extends Activity {
                 banner.setVisibility(View.VISIBLE);
                 banner.setBackground(Ui.box(Ui.ERRBG, 0, 8));
                 banner.setTextColor(Ui.ERR);
-                banner.setText("Login expired - tap here to log in again. Scans keep being saved on this phone.");
+                banner.setText("This device was removed by the admin - tap here and scan a new QR code. Scans keep being saved on this phone.");
                 banner.setOnClickListener(new View.OnClickListener() {
-                    @Override public void onClick(View v) { toLogin("Log in again - your scans are safe on this phone and will be sent after login."); }
+                    @Override public void onClick(View v) {
+                        Api.logout();
+                        toLogin("Scan a new QR code - your scans are safe on this phone and will be sent after connecting.");
+                    }
                 });
             }
         });
@@ -1165,9 +1174,9 @@ public class MainActivity extends Activity {
 
     private void menu() {
         final String[] items = {"⟳ Refresh list from Flipkart", "＋ Start new task", "↺ Reopen a finished task", "🕘 History",
-                "📋 Not received yet", "⚠ Report a problem packet", "🌐 Open full page (claims, list, settings)",
-                "📱 This device", "⇪ Send this phone's scans again", "Log out"};
-        new AlertDialog.Builder(this).setTitle("Hike Scan " + AppInfo.VERSION_NAME + " · " + me.optString("user"))
+                "📋 Not received yet", "⚠ Report a problem packet", "📱 This device", "⇪ Send this phone's scans again",
+                "Disconnect this device"};
+        new AlertDialog.Builder(this).setTitle("Hike Scan " + AppInfo.VERSION_NAME + " · 📱 " + Api.deviceName())
                 .setItems(items, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         switch (w) {
@@ -1177,10 +1186,9 @@ public class MainActivity extends Activity {
                             case 3: history("task", "all"); break;
                             case 4: history("day", "missing"); break;
                             case 5: Problems.start(MainActivity.this, loc, day, "", "", me); break;
-                            case 6: startActivity(new Intent(Intent.ACTION_VIEW, Api.webUrl(Api.SECTION + "/?loc=" + Api.encode(loc)))); break;
-                            case 7: deviceSettings(); break;
-                            case 8: resendAll(); break;
-                            case 9: logout(); break;
+                            case 6: deviceSettings(); break;
+                            case 7: resendAll(); break;
+                            case 8: logout(); break;
                         }
                     }
                 }).show();
@@ -1194,9 +1202,10 @@ public class MainActivity extends Activity {
 
     private void logout() {
         int waiting = store.unsentCount();
-        new AlertDialog.Builder(this).setTitle("Log out?")
-                .setMessage(waiting > 0 ? waiting + " scans are not sent yet. They stay on this phone and are sent after the next login." : "You can log in again any time.")
-                .setPositiveButton("Log out", new DialogInterface.OnClickListener() {
+        new AlertDialog.Builder(this).setTitle("Disconnect this device?")
+                .setMessage((waiting > 0 ? waiting + " scans are not sent yet. They stay on this phone and are sent after connecting again.\n\n" : "") +
+                        "To use it again, scan a new QR code from the admin.")
+                .setPositiveButton("Disconnect", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) { Api.logout(); toLogin(null); }
                 }).setNegativeButton("Cancel", null).show();
     }

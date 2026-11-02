@@ -29,10 +29,19 @@
             </intent-filter>
         </activity>
 
+        <!-- "Connect this device": opened by the QR page in the phone browser (hikescan://pair?c=...) -->
         <activity
             android:name=".LoginActivity"
-            android:exported="false"
+            android:exported="true"
+            android:launchMode="singleTask"
             android:configChanges="orientation|screenSize|keyboard|keyboardHidden"
-            android:windowSoftInputMode="adjustResize" />
+            android:windowSoftInputMode="adjustResize">
+            <intent-filter>
+                <action android:name="android.intent.action.VIEW" />
+                <category android:name="android.intent.category.DEFAULT" />
+                <category android:name="android.intent.category.BROWSABLE" />
+                <data android:scheme="hikescan" android:host="pair" />
+            </intent-filter>
+        </activity>
     </application>
 </manifest>

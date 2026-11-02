@@ -121,7 +121,7 @@ public final class Problems {
         box.addView(video, Ui.lpm(-1, Ui.dp(46), 0, 4, 0, 4));
         box.addView(gallery, Ui.lpm(-1, Ui.dp(46), 0, 4, 0, 4));
         TextView hint = Ui.text(a, "Take photos of the label, the open packet and the product, and a video of opening it. " +
-                "Claim text, ticket ID and status are on the full page (menu → Open full page).", 12, Ui.INK2, false);
+                "The admin files the claim from Return scanning → Problems & claims.", 12, Ui.INK2, false);
         hint.setPadding(0, Ui.dp(8), 0, 0);
         box.addView(hint);
         if (open != null && open.isShowing()) open.dismiss();

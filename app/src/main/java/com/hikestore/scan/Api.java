@@ -24,8 +24,6 @@ import java.util.Collection;
 import java.util.LinkedHashMap;
 import java.util.List;
 import java.util.Map;
-import java.util.regex.Matcher;
-import java.util.regex.Pattern;
 
 import javax.net.ssl.HttpsURLConnection;
 import javax.net.ssl.SSLContext;
@@ -47,6 +45,7 @@ public final class Api {
     private static String server = DEFAULT_SERVER;
     private static final Map<String, String> cookies = new LinkedHashMap<>();
     private static String csrf = "";
+    private static String deviceToken = "";
     private static SSLSocketFactory sslFactory;
 
     public static class LoginRequired extends IOException {
@@ -70,6 +69,7 @@ public final class Api {
         prefs = ctx.getSharedPreferences("api", Context.MODE_PRIVATE);
         server = prefs.getString("server", DEFAULT_SERVER);
         csrf = prefs.getString("csrf", "");
+        deviceToken = prefs.getString("device_token", "");
         cookies.clear();
         for (String part : prefs.getString("cookies", "").split(";")) {
             int i = part.indexOf('=');
@@ -88,13 +88,16 @@ public final class Api {
         prefs.edit().putString("server", s).apply();
     }
 
-    public static boolean loggedIn() { return cookies.containsKey("hikeone") && csrf.length() > 0; }
+    /** this phone is connected (QR code) - workers never log in with a user */
+    public static boolean loggedIn() { return deviceToken.length() > 0; }
+
+    public static String deviceName() { return prefs.getString("device_name", ""); }
 
     public static synchronized void setCsrf(String c) { csrf = c == null ? "" : c; prefs.edit().putString("csrf", csrf).apply(); }
 
     public static synchronized void logout() {
-        cookies.clear(); csrf = "";
-        prefs.edit().remove("cookies").remove("csrf").apply();
+        cookies.clear(); csrf = ""; deviceToken = "";
+        prefs.edit().remove("cookies").remove("csrf").remove("device_token").remove("device_name").apply();
     }
 
     private static synchronized void saveCookies() {
@@ -148,6 +151,7 @@ public final class Api {
         String ck = cookieHeader();
         if (!ck.isEmpty()) c.setRequestProperty("Cookie", ck);
         if (!csrf.isEmpty()) c.setRequestProperty("X-CSRF-Token", csrf);
+        if (!deviceToken.isEmpty()) c.setRequestProperty("X-Device-Token", deviceToken);
         if (body != null) {
             c.setDoOutput(true);
             c.setRequestProperty("Content-Type", contentType);
@@ -183,14 +187,19 @@ public final class Api {
         return new String(readBytes(in), "UTF-8");
     }
 
-    /** JSON GET/POST to the section; throws LoginRequired when the session ended. */
+    /** worker API of the section: /return_scan/w/api/... with this device's key */
+    public static final String W = SECTION + "/w";
+
+    /** JSON GET/POST; throws LoginRequired when this device was removed. */
     public static JSONObject call(String method, String path, JSONObject data) throws IOException {
         byte[] body = data == null ? null : data.toString().getBytes("UTF-8");
-        Resp r = request(method, SECTION + path, body, "application/json", 0);
-        if (r.code == 401 || (r.code == 302 && r.location.contains("/login"))) throw new LoginRequired();
-        if (r.code == 400 && r.body.contains("expired")) throw new LoginRequired();
-        JSONObject j = r.json();
-        return j;
+        Resp r = request(method, W + path, body, "application/json", 0);
+        if (r.code == 400 && r.body.contains("expired")) {         // security token refreshed on the server
+            loadMe();
+            r = request(method, W + path, body, "application/json", 0);
+        }
+        if (r.code == 401) throw new LoginRequired();
+        return r.json();
     }
 
     public static JSONObject get(String path) throws IOException { return call("GET", path, null); }
@@ -206,7 +215,7 @@ public final class Api {
         bo.write(head.getBytes("UTF-8"));
         bo.write(data);
         bo.write(("\r\n--" + boundary + "--\r\n").getBytes("UTF-8"));
-        Resp r = request("POST", SECTION + path, bo.toByteArray(), "multipart/form-data; boundary=" + boundary, 180000);
+        Resp r = request("POST", W + path, bo.toByteArray(), "multipart/form-data; boundary=" + boundary, 180000);
         if (r.code == 401) throw new LoginRequired();
         return r.json();
     }
@@ -214,7 +223,7 @@ public final class Api {
     /** multipart upload streamed from the file (videos: never the whole file in memory). */
     public static JSONObject uploadStream(String path, String fileName, String mime, InputStream src) throws IOException {
         String boundary = "----hikescan" + System.currentTimeMillis();
-        URL url = new URL(server + SECTION + path);
+        URL url = new URL(server + W + path);
         HttpURLConnection c = (HttpURLConnection) url.openConnection();
         if (c instanceof HttpsURLConnection && sslFactory != null) ((HttpsURLConnection) c).setSSLSocketFactory(sslFactory);
         c.setInstanceFollowRedirects(false);
@@ -227,6 +236,7 @@ public final class Api {
         c.setRequestProperty("Accept", "application/json");
         c.setRequestProperty("Cookie", cookieHeader());
         c.setRequestProperty("X-CSRF-Token", csrf);
+        c.setRequestProperty("X-Device-Token", deviceToken);
         c.setRequestProperty("Content-Type", "multipart/form-data; boundary=" + boundary);
         try {
             OutputStream os = c.getOutputStream();
@@ -249,115 +259,49 @@ public final class Api {
         }
     }
 
-    // ------------------------------------------------------------------ login (same steps as the website)
-    private static final Pattern CSRF = Pattern.compile("name=\"csrf\" value=\"([^\"]+)\"");
-    private static final Pattern FLASH = Pattern.compile("class=\"flash error\">([^<]+)<");
-    private static final Pattern METHOD = Pattern.compile("method=(\\w+)\"[^>]*>([^<]+)</a>");
-
-    static String csrfOf(String html) {
-        Matcher m = CSRF.matcher(html);
-        return m.find() ? m.group(1) : "";
+    // ------------------------------------------------------------------ connect this device (QR code)
+    /** Read the code (and server) from what the scanner / camera read: the QR holds
+     *  https://app.hikestore.in/return_scan/w/pair?c=ABCD2345 ; the code can also be typed. */
+    public static String[] parsePairText(String text) {
+        String t = text == null ? "" : text.trim();
+        String code = t, srv = null;
+        int q = t.indexOf("c=");
+        if (t.contains("://") && q > 0) {
+            code = t.substring(q + 2).split("[&#\\s]")[0];
+            int s = t.indexOf("s=");
+            if (t.startsWith("hikescan://") && s > 0) {
+                try { srv = java.net.URLDecoder.decode(t.substring(s + 2).split("&")[0], "UTF-8"); } catch (Exception ignored) { }
+            } else if (t.startsWith("http")) {
+                int p = t.indexOf("/", t.indexOf("://") + 3);
+                srv = p > 0 ? t.substring(0, p) : t;
+            }
+        }
+        code = code.toUpperCase().replaceAll("[^A-Z0-9]", "");
+        return new String[]{code, srv};
     }
 
-    static String flashOf(String html, String fallback) {
-        Matcher m = FLASH.matcher(html);
-        return m.find() ? m.group(1).replace("&#39;", "'").replace("&amp;", "&") : fallback;
-    }
-
-    static byte[] form(String... kv) throws IOException {
-        StringBuilder sb = new StringBuilder();
-        for (int i = 0; i + 1 < kv.length; i += 2) {
-            if (sb.length() > 0) sb.append('&');
-            sb.append(URLEncoder.encode(kv[i], "UTF-8")).append('=').append(URLEncoder.encode(kv[i + 1], "UTF-8"));
-        }
-        return sb.toString().getBytes("UTF-8");
-    }
-
-    public static class LoginStep {
-        public boolean done;
-        public String error;
-        public List<String[]> methods = new ArrayList<>();   // {id, label}
-        public String pageCsrf = "";
-        public String info = "";
-    }
-
-    /** Step 1: username + password. Returns the second-step methods (Authenticator / email). */
-    public static LoginStep loginPassword(String user, String pass) throws IOException {
-        synchronized (Api.class) { cookies.clear(); csrf = ""; }
-        LoginStep st = new LoginStep();
-        Resp r = request("GET", "/login", null, null, 0);
-        String tok = csrfOf(r.body);
-        r = request("POST", "/login", form("csrf", tok, "next", "", "username", user, "password", pass),
-                "application/x-www-form-urlencoded", 0);
-        if (r.code != 302 || !r.location.contains("/login/verify")) {
-            st.error = flashOf(r.body, "Wrong username or password.");
-            return st;
-        }
-        return verifyPage(st, "");
-    }
-
-    private static LoginStep verifyPage(LoginStep st, String method) throws IOException {
-        Resp r = request("GET", "/login/verify" + (method.isEmpty() ? "" : "?method=" + method), null, null, 0);
-        if (r.code == 302 && r.location.contains("enroll")) {
-            st.error = "This user has no Authenticator yet. Log in once on app.hikestore.in in a browser to set it up, then use the app.";
-            return st;
-        }
-        if (r.code == 302 && r.location.contains("/login")) {
-            st.error = "Login expired - try again.";
-            return st;
-        }
-        st.pageCsrf = csrfOf(r.body);
-        Matcher m = METHOD.matcher(r.body);
-        while (m.find()) st.methods.add(new String[]{m.group(1), m.group(2).trim()});
-        if (st.methods.isEmpty()) {
-            if (r.body.contains("Send code to")) st.methods.add(new String[]{"email", "Email code"});
-            else st.methods.add(new String[]{"totp", "Authenticator app"});
-        }
-        return st;
-    }
-
-    /** Ask the server to email a code. */
-    public static String sendEmailCode() throws IOException {
-        LoginStep st = verifyPage(new LoginStep(), "email");
-        if (st.error != null) return st.error;
-        Resp r = request("POST", "/login/verify", form("csrf", st.pageCsrf, "method", "email", "action", "send"),
-                "application/x-www-form-urlencoded", 0);
-        Resp page = request("GET", "/login/verify?method=email", null, null, 0);
-        Matcher ok = Pattern.compile("class=\"flash ok\">([^<]+)<").matcher(page.body);
-        if (ok.find()) return ok.group(1);
-        return flashOf(page.body, "Code sent - check the email.");
-    }
-
-    /** Step 2: the 6-digit code. On success the session is ready and /api/me is loaded. */
-    public static LoginStep loginCode(String method, String code) throws IOException {
-        LoginStep st = verifyPage(new LoginStep(), method);
-        if (st.error != null) return st;
-        Resp r = request("POST", "/login/verify", form("csrf", st.pageCsrf, "method", method, "code", code.trim()),
-                "application/x-www-form-urlencoded", 0);
-        if (r.code != 302) {
-            st.error = flashOf(r.body, "Wrong code.");
-            return st;
-        }
-        if (r.location.contains("/account/password")) {
-            st.error = "This user still has the starting password. Change it once on app.hikestore.in in a browser, then log in here.";
-            return st;
-        }
+    /** Connect with the code from the QR; returns null when OK, else the message to show. */
+    public static String pair(String code, String name, String model) throws IOException {
+        synchronized (Api.class) { cookies.clear(); csrf = ""; deviceToken = ""; }
+        loadMe();                                    // gets the session cookie + security token
+        JSONObject b = new JSONObject();
+        try { b.put("code", code); b.put("name", name); b.put("model", model); } catch (JSONException ignored) { }
+        Resp r = request("POST", W + "/api/pair", b.toString().getBytes("UTF-8"), "application/json", 0);
+        JSONObject j = r.json();
+        if (!j.optBoolean("ok")) return j.optString("error", "Could not connect");
+        synchronized (Api.class) { deviceToken = j.optString("token"); }
+        prefs.edit().putString("device_token", deviceToken).putString("device_name", j.optString("name")).apply();
         JSONObject me = loadMe();
-        if (me == null) {
-            st.error = "Logged in, but this user has no access to Return scanning. Ask the admin to tick it in Users & access.";
-            return st;
-        }
-        st.done = true;
-        return st;
+        return me != null && me.optJSONObject("device") != null ? null : "Connected, but the server did not accept the device key.";
     }
 
-    /** /api/me gives the security token for changes and all settings. */
+    /** settings + security token; also tells whether this device is still connected */
     public static JSONObject loadMe() throws IOException {
-        Resp r = request("GET", SECTION + "/api/me", null, null, 0);
-        if (r.code == 403 || r.code == 404) return null;
-        if (r.code == 401 || r.code == 302) throw new LoginRequired();
+        Resp r = request("GET", W + "/api/me", null, null, 0);
+        if (r.code == 404) throw new IOException("Return scanning is not installed on " + server);
         JSONObject j = r.json();
         setCsrf(j.optString("csrf", ""));
+        if (!deviceToken.isEmpty() && j.optJSONObject("device") == null) throw new LoginRequired();
         prefs.edit().putString("me", j.toString()).apply();
         return j;
     }
