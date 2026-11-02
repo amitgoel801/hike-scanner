@@ -510,6 +510,8 @@ public class MainActivity extends Activity {
                 addKey(o.optString("t"), o.optString("t"));
                 addKey(o.optString("r"), o.optString("t"));
                 addKey(o.optString("o"), o.optString("t"));
+                JSONArray al = o.optJSONArray("al");          // other barcodes of the same label
+                if (al != null) for (int k = 0; k < al.length(); k++) addKey(al.optString(k), o.optString("t"));
                 JSONArray it = o.optJSONArray("i");
                 if (it != null) for (int k = 0; k < it.length(); k++) {
                     String oi = it.optJSONObject(k).optString("oi");
