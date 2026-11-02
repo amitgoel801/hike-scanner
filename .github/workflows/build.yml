@@ -5,6 +5,9 @@ on:
     branches: [main]
   workflow_dispatch:
 
+permissions:
+  contents: write
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -68,3 +71,35 @@ jobs:
           name: HikeScan-apk
           path: out/*.apk
           retention-days: 30
+
+      - name: Publish as a GitHub Release (download link)
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          V=$(grep -oP "versionName '\K[^']+" app/build.gradle)
+          C=$(grep -oP "versionCode \K\d+" app/build.gradle)
+          F=$(ls out/*.apk)
+          if [ "${{ steps.key.outputs.have }}" = "yes" ]; then
+            TAG="v$V-build${{ github.run_number }}"
+            gh release create "$TAG" "$F" --title "Hike Scan $V (build ${{ github.run_number }})" \
+              --notes "Install this APK on the scanner phones. Version $V, code $C." --latest
+          else
+            TAG="test-build${{ github.run_number }}"
+            gh release create "$TAG" "$F" --title "TEST build ${{ github.run_number }} (not for staff)" \
+              --notes "Test build without the signing key - for checking only." --prerelease
+          fi
+
+      - name: Keep the latest APK on the 'builds' branch
+        env:
+          TOKEN: ${{ github.token }}
+        run: |
+          V=$(grep -oP "versionName '\K[^']+" app/build.gradle)
+          C=$(grep -oP "versionCode \K\d+" app/build.gradle)
+          SIGNED=${{ steps.key.outputs.have }}
+          mkdir -p /tmp/b && cp out/*.apk /tmp/b/ && cd /tmp/b
+          printf '{"version_code": %s, "version_name": "%s", "signed": "%s", "run": %s, "commit": "%s"}\n' "$C" "$V" "$SIGNED" "${{ github.run_number }}" "${{ github.sha }}" > build.json
+          git init -q -b builds
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add -A && git commit -q -m "APK build ${{ github.run_number }} ($V, signed=$SIGNED)"
+          git push -q -f "https://x-access-token:${TOKEN}@github.com/${{ github.repository }}.git" builds
