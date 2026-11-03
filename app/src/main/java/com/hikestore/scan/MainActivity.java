@@ -70,8 +70,9 @@ public class MainActivity extends Activity {
     private String loc = "", day = "", psig = "";
     private final Map<String, JSONObject> packets = new LinkedHashMap<>();
     private final Map<String, String> index = new HashMap<>();
-    private final Map<String, Integer> bags = new HashMap<>();
-    private final Set<String> gotLater = new HashSet<>();          // this day's packets received on a later day     // courier bag label -> packets inside
+    private final Map<String, Integer> bags = new HashMap<>();     // courier bag label -> packets inside
+    private final Set<String> gotLater = new HashSet<>();          // this day's packets received on a later day
+    private final Set<String> myCids = new HashSet<>();            // client ids of scans made on this phone
     private JSONArray serverScans = new JSONArray(), batches = new JSONArray();
     private JSONObject batch = null, issues = new JSONObject(), lastSync = null, syncRow = null, syncProg = null;
     private boolean syncing = false;
@@ -660,7 +661,9 @@ public class MainActivity extends Activity {
             seen.add("id" + it.id);
         }
         long cur = batch != null ? batch.optLong("id") : 0;
+        myCids.clear();
         for (Store.Scan s : store.forDay(loc, day)) {
+            myCids.add(s.cid);
             if (seen.contains(s.cid) || (s.serverId > 0 && seen.contains("id" + s.serverId))) continue;
             if ("undone".equals(s.serverRes)) continue;
             Item it = new Item();
@@ -672,6 +675,17 @@ public class MainActivity extends Activity {
             @Override public int compare(Item a, Item b) { return Double.compare(a.at, b.at); }
         });
         scans = out;
+    }
+
+    /** scans made on THIS device (every device shows its own last scans; the counts stay for everyone) */
+    private boolean mine(Item i) {
+        return i.pending || myCids.contains(i.cid) || i.by.equals(me.optString("user", ""));
+    }
+
+    private List<Item> myTaskScans() {
+        List<Item> l = new ArrayList<>();
+        for (Item i : taskScans()) if (mine(i)) l.add(i);
+        return l;
     }
 
     private List<Item> taskScans() {
@@ -760,6 +774,7 @@ public class MainActivity extends Activity {
         it.cid = s.cid; it.code = code; it.tracking = s.tracking; it.res = res; it.at = s.at; it.by = s.user;
         it.bid = s.batchId; it.pending = true;
         scans.add(it);
+        myCids.add(it.cid);
         last = it;
         showResult(it, p, first);
         renderCounts(); renderPrev(); renderTask();
@@ -930,7 +945,7 @@ public class MainActivity extends Activity {
     private void renderPrev() {
         if (prevStrip == null) return;
         prevStrip.removeAllViews();
-        List<Item> t = taskScans();
+        List<Item> t = myTaskScans();
         histBtn.setText("🕘 " + t.size());
         for (int k = t.size() - 1, n = 0; k >= 0 && n < 4; k--, n++) {
             final Item i = t.get(k);
@@ -972,7 +987,7 @@ public class MainActivity extends Activity {
             pauseBtn.setVisibility(View.GONE);
             finishBtn.setVisibility(View.GONE);
         } else {
-            taskText.setText(batch.optString("name") + " · " + Ui.plural(taskScans().size(), "scan"));
+            taskText.setText(batch.optString("name") + " · you " + myTaskScans().size() + " · all devices " + taskScans().size());
             pauseBtn.setVisibility(View.VISIBLE);
             finishBtn.setVisibility(View.VISIBLE);
             pauseBtn.setText(paused() ? "▶ Resume" : "⏸ Pause");
@@ -1064,7 +1079,7 @@ public class MainActivity extends Activity {
             mb.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
             c.addView(mb);
         }
-        int no = taskScans().indexOf(it) + 1;
+        int no = myTaskScans().indexOf(it) + 1;
         LinearLayout sl = Ui.row(this);
         sl.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), 0);
         sl.addView(Ui.text(this, "SCANNED ", 11, Ui.INK2, true));
@@ -1489,8 +1504,12 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================== history & details
+    private boolean histMine = true;
+
     private void history(final String scope, final String filter) {
-        final List<Item> list = "task".equals(scope) ? taskScans() : scans;
+        final List<Item> all = "task".equals(scope) ? taskScans() : scans;
+        final List<Item> list = new ArrayList<>();
+        for (Item i : all) if (!histMine || mine(i)) list.add(i);
         LinearLayout box = Ui.col(this);
         Ui.pad(box, 10);
         LinearLayout chips = Ui.row(this);
@@ -1519,6 +1538,12 @@ public class MainActivity extends Activity {
             @Override public void onClick(View v) { if (dlg[0] != null) dlg[0].dismiss(); history("task".equals(scope) ? "day" : "task", filter); }
         });
         box.addView(scopeBtn);
+        TextView whoBtn = Ui.text(this, histMine ? "👤 Showing: this device only · tap for everyone" : "👥 Showing: all devices · tap for this device only", 12, Ui.ACCENT, true);
+        whoBtn.setPadding(0, 0, 0, Ui.dp(4));
+        whoBtn.setOnClickListener(new View.OnClickListener() {
+            @Override public void onClick(View v) { histMine = !histMine; if (dlg[0] != null) dlg[0].dismiss(); history(scope, filter); }
+        });
+        box.addView(whoBtn);
         LinearLayout rows = Ui.col(this);
         if ("missing".equals(filter)) {
             List<JSONObject> m = missing();
