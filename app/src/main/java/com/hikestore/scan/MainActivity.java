@@ -234,7 +234,7 @@ public class MainActivity extends Activity {
     /** run on the screen thread, unless this screen was closed meanwhile */
     private void post(final Runnable r) {
         if (destroyed) return;
-        post(new Runnable() { @Override public void run() { if (!destroyed) r.run(); } });
+        ui.post(new Runnable() { @Override public void run() { if (!destroyed) r.run(); } });   // ui.post - NOT post (1.7 called itself = crash)
     }
 
     private void exec(ExecutorService e, Runnable r) {
@@ -1598,7 +1598,7 @@ public class MainActivity extends Activity {
 
     private void checkUpdate() {
         JSONObject app = me.optJSONObject("app");
-        if (app == null || app.optInt("version_code") <= AppInfo.VERSION_CODE) return;
+        if (app == null || app.optInt("version_code") <= AppInfo.VERSION_CODE || isFinishing() || destroyed) return;
         String askedKey = "update_asked_" + app.optInt("version_code");
         if (Ui.today().equals(dev.getString(askedKey, ""))) return;          // asked already today - no popup every time
         dev.edit().putString(askedKey, Ui.today()).apply();
