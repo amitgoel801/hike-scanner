@@ -171,8 +171,6 @@ public class MainActivity extends Activity {
         rebuildScans();
         renderAll();
         loadCachedList();            // in the background: 2,000+ packets must never freeze the screen
-        if (Crash.pending() != null) toast("The app closed unexpectedly last time - the details were sent to the admin.");
-        Crash.sendPending();
         exec(bg, new Runnable() {
             @Override public void run() {
                 try { store.cleanOld(System.currentTimeMillis() / 1000.0 - 15 * 86400); } catch (Exception ignored) { }

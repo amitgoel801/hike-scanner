@@ -76,6 +76,11 @@ public class HomeActivity extends Activity {
         status = Ui.text(this, "", 12, 0xFFB8C0CC, false);
         status.setPadding(Ui.dp(12), 0, Ui.dp(12), Ui.dp(6));
         root.addView(status);
+        problem = Ui.text(this, "", 12, 0xFFFFD27A, true);
+        problem.setPadding(Ui.dp(12), Ui.dp(6), Ui.dp(12), Ui.dp(6));
+        problem.setVisibility(View.GONE);
+        problem.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { showProblem(); } });
+        root.addView(problem);
         ScrollView sv = new ScrollView(this);
         grid = Ui.col(this);
         grid.setPadding(Ui.dp(8), Ui.dp(4), Ui.dp(8), Ui.dp(12));
@@ -101,7 +106,49 @@ public class HomeActivity extends Activity {
         sendPending(this, new Runnable() { @Override public void run() { renderStatus(); } });
     }
 
+    private TextView problem;
+
+    /** "the app closed last time": what happened, so it can be fixed (also sent to HikeOne) */
+    private void renderProblem() {
+        if (problem == null) return;
+        String h = Crash.headline();
+        boolean sent = false;
+        if (h == null) {
+            String t = Crash.lastSent();
+            if (t != null) for (String ln : t.split("\n"))
+                if (ln.startsWith("The app closed") || ln.startsWith("The screen froze") || ln.startsWith("Safe start")) { h = ln; sent = true; }
+        }
+        if (h == null) { problem.setVisibility(View.GONE); return; }
+        problem.setVisibility(View.VISIBLE);
+        problem.setText("⚠ " + h + (sent ? " - sent to HikeOne" : " - will be sent to HikeOne") + " · tap to see");
+    }
+
+    private void showProblem() {
+        String t = Crash.pending();
+        if (t == null) t = Crash.lastSent();
+        if (t == null) return;
+        TextView tv = Ui.text(this, t, 11, Ui.INK, false);
+        tv.setTextIsSelectable(true);
+        tv.setPadding(Ui.dp(14), Ui.dp(10), Ui.dp(14), Ui.dp(10));
+        ScrollView sv = new ScrollView(this);
+        sv.addView(tv);
+        new android.app.AlertDialog.Builder(this)
+                .setTitle("Why the app closed")
+                .setView(sv)
+                .setPositiveButton("OK", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) {
+                        if (Crash.pending() == null) Crash.dismissSent();
+                        renderProblem();
+                    }
+                })
+                .setNeutralButton("Send again", new android.content.DialogInterface.OnClickListener() {
+                    @Override public void onClick(android.content.DialogInterface d, int w) { Crash.sendPending(); }
+                })
+                .show();
+    }
+
     private void renderStatus() {
+        renderProblem();
         int n = Store.get(this).unsentCount();
         String dev = Api.deviceName();
         status.setText((dev.isEmpty() ? "" : "📱 " + dev + " · ") + "app " + AppInfo.VERSION_NAME + " · " +

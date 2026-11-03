@@ -183,6 +183,14 @@ public final class Store extends SQLiteOpenHelper {
         } catch (Throwable e) { return null; }
     }
 
+    /** self-repair: forget every saved list (they are downloaded again); scans are NOT touched */
+    public synchronized void clearLists() {
+        try { getWritableDatabase().delete("cache", null, null); } catch (Throwable ignored) { }
+        File[] fs = dir.listFiles();
+        if (fs != null) for (File f : fs) //noinspection ResultOfMethodCallIgnored
+            f.delete();
+    }
+
     /** the saved lists of days older than 15 days are removed (scans themselves are kept by cleanOld) */
     public synchronized void cleanCache(double beforeEpoch) {
         try {

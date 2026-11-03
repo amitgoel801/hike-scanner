@@ -89,6 +89,10 @@ jobs:
               --notes "Test build without the signing key - for checking only." --prerelease
           fi
 
+      - name: Startup test on a simulated phone (logged in + big saved list)
+        continue-on-error: true
+        run: gradle :app:testDebugUnitTest --no-daemon --stacktrace
+
       - name: Keep the latest APK on the 'builds' branch
         env:
           TOKEN: ${{ github.token }}

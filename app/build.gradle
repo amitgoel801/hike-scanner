@@ -11,8 +11,8 @@ android {
         minSdk 21            // Android 5.0 and newer (incl. Android 11 / 12 handhelds)
         targetSdk 34
         // keep in step with AppInfo.java
-        versionCode 8
-        versionName '1.7'
+        versionCode 9
+        versionName '1.8'
     }
 
     signingConfigs {
@@ -53,4 +53,19 @@ android {
         abortOnError false
         checkReleaseBuilds false
     }
+
+    testOptions {
+        unitTests {
+            includeAndroidResources = true
+            returnDefaultValues = true
+            all {
+                testLogging { events "passed", "failed", "skipped", "standardOut", "standardError"; exceptionFormat "full" }
+            }
+        }
+    }
+}
+
+dependencies {
+    testImplementation 'junit:junit:4.13.2'
+    testImplementation 'org.robolectric:robolectric:4.13'
 }
