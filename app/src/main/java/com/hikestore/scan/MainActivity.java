@@ -70,7 +70,8 @@ public class MainActivity extends Activity {
     private String loc = "", day = "", psig = "";
     private final Map<String, JSONObject> packets = new LinkedHashMap<>();
     private final Map<String, String> index = new HashMap<>();
-    private final Map<String, Integer> bags = new HashMap<>();     // courier bag label -> packets inside
+    private final Map<String, Integer> bags = new HashMap<>();
+    private final Set<String> gotLater = new HashSet<>();          // this day's packets received on a later day     // courier bag label -> packets inside
     private JSONArray serverScans = new JSONArray(), batches = new JSONArray();
     private JSONObject batch = null, issues = new JSONObject(), lastSync = null, syncRow = null, syncProg = null;
     private boolean syncing = false;
@@ -526,6 +527,9 @@ public class MainActivity extends Activity {
         JSONArray trash = st.optJSONArray("trash_cids");   // scans an admin cleared / undid
         if (trash != null) for (int i = 0; i < trash.length(); i++) store.markUndone(trash.optString(i));
         serverScans = st.optJSONArray("scans") != null ? st.optJSONArray("scans") : new JSONArray();
+        gotLater.clear();
+        JSONArray gl = st.optJSONArray("got_later");
+        if (gl != null) for (int i = 0; i < gl.length(); i++) gotLater.add(gl.optJSONObject(i).optString("t"));
         batches = st.optJSONArray("batches") != null ? st.optJSONArray("batches") : new JSONArray();
         batch = st.optJSONObject("batch");
         issues = st.optJSONObject("issues") != null ? st.optJSONObject("issues") : new JSONObject();
@@ -911,6 +915,10 @@ public class MainActivity extends Activity {
             }
             if ("not_found".equals(i.res)) nf.add(i.code);
             if ("duplicate".equals(i.res)) dup++;
+        }
+        for (String t : gotLater) {
+            JSONObject p = packets.get(t);
+            if (p != null && day.equals(p.optString("d")) && gotSet.add(t)) { got++; if (p.optInt("x") == 1) gotX++; }
         }
         cExp.setText(String.valueOf(exp));
         cGot.setText(older > 0 ? got + "+" + older : String.valueOf(got));
@@ -1520,6 +1528,7 @@ public class MainActivity extends Activity {
     private List<JSONObject> missing() {
         Set<String> got = new HashSet<>();
         for (Item i : scans) if ("ok".equals(i.res)) got.add(i.tracking);
+        got.addAll(gotLater);
         List<JSONObject> out = new ArrayList<>();
         for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && p.optInt("x") != 1 && !got.contains(p.optString("t"))) out.add(p);
         return out;
