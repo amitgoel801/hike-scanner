@@ -6,6 +6,9 @@ import android.database.Cursor;
 import android.database.sqlite.SQLiteDatabase;
 import android.database.sqlite.SQLiteOpenHelper;
 
+import java.io.File;
+import java.io.FileInputStream;
+import java.io.FileOutputStream;
 import java.util.ArrayList;
 import java.util.List;
 
@@ -23,7 +26,13 @@ public final class Store extends SQLiteOpenHelper {
         return inst;
     }
 
-    private Store(Context c) { super(c, "hikescan.db", null, 2); }
+    private final File dir;
+
+    private Store(Context c) {
+        super(c, "hikescan.db", null, 2);
+        dir = new File(c.getFilesDir(), "lists");
+        dir.mkdirs();
+    }
 
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE scans (cid TEXT PRIMARY KEY, code TEXT NOT NULL, raw TEXT NOT NULL, loc TEXT NOT NULL," +
@@ -126,15 +135,66 @@ public final class Store extends SQLiteOpenHelper {
         return out;
     }
 
-    // ------------------------------------------------------------------ small cache (list of packets etc.)
+    // ------------------------------------------------------------------ cache (list of packets etc.)
+    // Big values (the day's 2,000+ packets, the day's scans) go to a FILE, not into the database:
+    // Android cannot read back a database value bigger than ~2 MB ("Row too big to fit into
+    // CursorWindow") - app 1.6 crashed on every reopen once the saved list grew past that.
+    private static final String FILE_MARK = "@file:";
+
+    private File fileFor(String k) {
+        StringBuilder b = new StringBuilder();
+        for (char ch : k.toCharArray()) b.append(Character.isLetterOrDigit(ch) || ch == '-' ? ch : '_');
+        return new File(dir, b.toString() + ".json");
+    }
+
     public synchronized void put(String k, String v) {
+        String stored = v;
+        if (v != null && v.length() > 100000) {
+            File f = fileFor(k), tmp = new File(f.getPath() + ".tmp");
+            try {
+                FileOutputStream o = new FileOutputStream(tmp);
+                o.write(v.getBytes("UTF-8"));
+                o.close();
+                if (!tmp.renameTo(f)) { f.delete(); tmp.renameTo(f); }
+                stored = FILE_MARK + f.getName();
+            } catch (Exception e) { tmp.delete(); return; }      // not saved: the server sends it again
+        } else {
+            fileFor(k).delete();
+        }
         ContentValues cv = new ContentValues();
-        cv.put("k", k); cv.put("v", v); cv.put("at", System.currentTimeMillis() / 1000.0);
+        cv.put("k", k); cv.put("v", stored); cv.put("at", System.currentTimeMillis() / 1000.0);
         getWritableDatabase().insertWithOnConflict("cache", null, cv, SQLiteDatabase.CONFLICT_REPLACE);
     }
 
     public synchronized String getCache(String k) {
-        Cursor c = getReadableDatabase().rawQuery("SELECT v FROM cache WHERE k=?", new String[]{k});
-        try { return c.moveToFirst() ? c.getString(0) : null; } finally { c.close(); }
+        String v;
+        try {
+            Cursor c = getReadableDatabase().rawQuery("SELECT v FROM cache WHERE k=?", new String[]{k});
+            try { v = c.moveToFirst() ? c.getString(0) : null; } finally { c.close(); }
+        } catch (Throwable e) {            // a too-big value saved by app 1.6: drop it, the server sends the list again
+            try { getWritableDatabase().delete("cache", "k=?", new String[]{k}); } catch (Throwable ignored) { }
+            return null;
+        }
+        if (v == null || !v.startsWith(FILE_MARK)) return v;
+        File f = new File(dir, v.substring(FILE_MARK.length()));
+        try {
+            FileInputStream in = new FileInputStream(f);
+            try { return Api.readAll(in); } finally { in.close(); }
+        } catch (Throwable e) { return null; }
+    }
+
+    /** the saved lists of days older than 15 days are removed (scans themselves are kept by cleanOld) */
+    public synchronized void cleanCache(double beforeEpoch) {
+        try {
+            Cursor c = getReadableDatabase().rawQuery("SELECT k, v FROM cache WHERE at<?", new String[]{String.valueOf(beforeEpoch)});
+            try {
+                while (c.moveToNext()) {
+                    String v = null;
+                    try { v = c.getString(1); } catch (Throwable ignored) { }
+                    if (v != null && v.startsWith(FILE_MARK)) new File(dir, v.substring(FILE_MARK.length())).delete();
+                }
+            } finally { c.close(); }
+        } catch (Throwable ignored) { }
+        try { getWritableDatabase().delete("cache", "at<?", new String[]{String.valueOf(beforeEpoch)}); } catch (Throwable ignored) { }
     }
 }

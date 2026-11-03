@@ -51,6 +51,7 @@ public class HomeActivity extends Activity {
 
     @Override protected void onCreate(Bundle b) {
         super.onCreate(b);
+        Crash.install(this);
         Api.init(this);
         Images.init(this);
         Ui.init(this);

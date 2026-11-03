@@ -63,6 +63,12 @@ public class MainActivity extends Activity {
     private final Handler ui = new Handler(Looper.getMainLooper());
     private final ExecutorService bg = Executors.newSingleThreadExecutor();
     private final ExecutorService net = Executors.newSingleThreadExecutor();
+    private final ExecutorService watch = Executors.newSingleThreadExecutor();   // watches a Flipkart refresh (minutes)
+    private volatile boolean destroyed = false;
+    private boolean ready = false;                       // the list kept on the phone is loaded
+    private boolean resumedBefore = false;
+    private int loadGen = 0;
+    private final List<String[]> waiting = new ArrayList<>();       // scans made while the list was still loading
     private Store store;
     private Sounds sounds;
     private SharedPreferences dev;
@@ -162,20 +168,25 @@ public class MainActivity extends Activity {
         loc = dev.getString("loc", me.optString("default_location", ""));
         if (!hasLoc(loc)) loc = me.optString("default_location", "");
         buildUi();
-        loadCachedList();
         rebuildScans();
         renderAll();
-        store.cleanOld(System.currentTimeMillis() / 1000.0 - 15 * 86400);
-        // fresh settings + list
-        bg.execute(new Runnable() {
+        loadCachedList();            // in the background: 2,000+ packets must never freeze the screen
+        if (Crash.pending() != null) toast("The app closed unexpectedly last time - the details were sent to the admin.");
+        Crash.sendPending();
+        exec(bg, new Runnable() {
             @Override public void run() {
-                try { final JSONObject m = Api.loadMe(); if (m != null) ui.post(new Runnable() { @Override public void run() { me = m; applyMe(); renderTop(); checkUpdate(); } }); }
+                try { store.cleanOld(System.currentTimeMillis() / 1000.0 - 15 * 86400); } catch (Exception ignored) { }
+                try { store.cleanCache(System.currentTimeMillis() / 1000.0 - 15 * 86400); } catch (Exception ignored) { }
+            }
+        });
+        // fresh settings + list
+        exec(bg, new Runnable() {
+            @Override public void run() {
+                try { final JSONObject m = Api.loadMe(); if (m != null) post(new Runnable() { @Override public void run() { me = m; applyMe(); renderTop(); checkUpdate(); } }); }
                 catch (Api.LoginRequired e) { needLogin(); }
                 catch (Exception ignored) { }
             }
         });
-        refresh(true);
-        ui.postDelayed(ticker, 30000);
         ui.postDelayed(sender, 1500);
         ui.postDelayed(photoTick, 3000);
     }
@@ -200,13 +211,37 @@ public class MainActivity extends Activity {
         else registerReceiver(scanReceiver, f);
         focusInput();
         kickSender();
-        newDayCheck();
+        // coming back after the app was minimised: catch up at once, then every 30 s while it is on screen
+        ui.removeCallbacks(ticker);
+        ui.postDelayed(ticker, resumedBefore ? 700 : 30000);
+        resumedBefore = true;
     }
 
     @Override protected void onPause() {
         super.onPause();
         if (store == null) return;
         try { unregisterReceiver(scanReceiver); } catch (Exception ignored) { }
+        ui.removeCallbacks(ticker);          // no list refreshes while minimised (scans still go out)
+    }
+
+    @Override protected void onDestroy() {
+        destroyed = true;
+        ui.removeCallbacksAndMessages(null); // stop every timer of this screen (they used to keep running)
+        bg.shutdownNow();
+        watch.shutdownNow();
+        net.shutdown();                      // a scan being sent right now still finishes
+        super.onDestroy();
+    }
+
+    /** run on the screen thread, unless this screen was closed meanwhile */
+    private void post(final Runnable r) {
+        if (destroyed) return;
+        post(new Runnable() { @Override public void run() { if (!destroyed) r.run(); } });
+    }
+
+    private void exec(ExecutorService e, Runnable r) {
+        if (destroyed) return;
+        try { e.execute(r); } catch (java.util.concurrent.RejectedExecutionException ignored) { }
     }
 
     @Override public void onBackPressed() {
@@ -224,7 +259,7 @@ public class MainActivity extends Activity {
 
     private void needLogin() {
         loginNeeded = true;
-        ui.post(new Runnable() {
+        post(new Runnable() {
             @Override public void run() {
                 banner.setVisibility(View.VISIBLE);
                 banner.setBackground(Ui.box(Ui.ERRBG, 0, 8));
@@ -491,42 +526,126 @@ public class MainActivity extends Activity {
     }
 
     // ================================================================== list from Flipkart (kept on the phone)
-    private void loadCachedList() {
-        String s = store.getCache("state:" + loc + ":" + day);
-        if (s != null) try { applyState(new JSONObject(s), false); } catch (Exception ignored) { }
+    /** packets of one day, parsed in the BACKGROUND (2,000+ packets took seconds on the screen thread = freeze) */
+    static final class Parsed {
+        final Map<String, JSONObject> packets = new LinkedHashMap<>();
+        final Map<String, String> index = new HashMap<>();
+        final Map<String, Integer> bags = new HashMap<>();
+        final List<String> photos = new ArrayList<>();
+        String psig = "";
     }
 
-    private void applyState(JSONObject st, boolean save) {
-        JSONArray p = st.optJSONArray("packets");
-        if (p != null) {
-            packets.clear();
-            index.clear();
-            bags.clear();
-            List<String> photos = new ArrayList<>();
-            for (int i = 0; i < p.length(); i++) {
-                JSONObject o = p.optJSONObject(i);
-                packets.put(o.optString("t"), o);
-                String bg = o.optString("bg").toUpperCase();
-                if (!bg.isEmpty()) bags.put(bg, (bags.containsKey(bg) ? bags.get(bg) : 0) + 1);
-                JSONArray its = o.optJSONArray("i");
-                if (its != null) for (int k = 0; k < its.length(); k++) photos.add(its.optJSONObject(k).optString("im"));
-                addKey(o.optString("t"), o.optString("t"));
-                addKey(o.optString("r"), o.optString("t"));
-                addKey(o.optString("o"), o.optString("t"));
-                JSONArray al = o.optJSONArray("al");          // other barcodes of the same label
-                if (al != null) for (int k = 0; k < al.length(); k++) addKey(al.optString(k), o.optString("t"));
-                JSONArray it = o.optJSONArray("i");
-                if (it != null) for (int k = 0; k < it.length(); k++) {
-                    String oi = it.optJSONObject(k).optString("oi");
-                    addKey(oi, o.optString("t"));
-                    addKey("OD" + oi, o.optString("t"));
-                }
+    static Parsed parse(JSONArray p, String psig) {
+        Parsed r = new Parsed();
+        r.psig = psig == null ? "" : psig;
+        if (p == null) return r;
+        for (int i = 0; i < p.length(); i++) {
+            JSONObject o = p.optJSONObject(i);
+            if (o == null) continue;
+            String t = o.optString("t");
+            r.packets.put(t, o);
+            String bg = o.optString("bg").toUpperCase();
+            if (!bg.isEmpty()) r.bags.put(bg, (r.bags.containsKey(bg) ? r.bags.get(bg) : 0) + 1);
+            addKey(r.index, t, t);
+            addKey(r.index, o.optString("r"), t);
+            addKey(r.index, o.optString("o"), t);
+            JSONArray al = o.optJSONArray("al");          // other barcodes of the same label
+            if (al != null) for (int k = 0; k < al.length(); k++) addKey(r.index, al.optString(k), t);
+            JSONArray it = o.optJSONArray("i");
+            if (it != null) for (int k = 0; k < it.length(); k++) {
+                JSONObject x = it.optJSONObject(k);
+                if (x == null) continue;
+                r.photos.add(x.optString("im"));
+                String oi = x.optString("oi");
+                addKey(r.index, oi, t);
+                addKey(r.index, "OD" + oi, t);
             }
-            psig = st.optString("psig", "");
-            if (save) Images.prefetch(photos);           // keep every photo on the phone (works offline)
+        }
+        return r;
+    }
+
+    private static void addKey(Map<String, String> index, String k, String t) {
+        if (k == null || k.isEmpty()) return;
+        String K = k.toUpperCase();
+        if (!index.containsKey(K)) index.put(K, t);
+    }
+
+    /** BACKGROUND: parse a /api/state answer and keep it on the phone (packets and the rest saved apart, so the
+     *  30-second refresh never re-reads the big packet list). Returns the parsed packets, or null when unchanged. */
+    private Parsed digest(JSONObject st, String l, String d, boolean save) throws Exception {
+        JSONArray p = st.optJSONArray("packets");
+        Parsed pp = null;
+        if (p != null) {
+            pp = parse(p, st.optString("psig", ""));
+            if (save) {
+                JSONObject pk = new JSONObject();
+                pk.put("psig", pp.psig);
+                pk.put("packets", p);
+                store.put("packets:" + l + ":" + d, pk.toString());
+            }
+            st.remove("packets");
         }
         JSONArray trash = st.optJSONArray("trash_cids");   // scans an admin cleared / undid
         if (trash != null) for (int i = 0; i < trash.length(); i++) store.markUndone(trash.optString(i));
+        if (save) store.put("state:" + l + ":" + d, st.toString());
+        return pp;
+    }
+
+    private void loadCachedList() {
+        final String l = loc, d = day;
+        final int gen = ++loadGen;
+        ready = false;
+        exec(bg, new Runnable() {
+            @Override public void run() {
+                Parsed pp = null;
+                JSONObject rest = null;
+                try {
+                    String ps = store.getCache("packets:" + l + ":" + d);
+                    if (ps != null) { JSONObject o = new JSONObject(ps); pp = parse(o.optJSONArray("packets"), o.optString("psig")); }
+                    String s = store.getCache("state:" + l + ":" + d);
+                    if (s != null) {
+                        rest = new JSONObject(s);
+                        JSONArray old = rest.optJSONArray("packets");        // saved by app 1.6 and older
+                        if (pp == null && old != null) pp = parse(old, rest.optString("psig", ""));
+                        rest.remove("packets");
+                    }
+                } catch (Throwable ignored) { }       // a broken / too big copy: the server sends a fresh list
+                final Parsed fp = pp;
+                final JSONObject fr = rest;
+                post(new Runnable() {
+                    @Override public void run() {
+                        if (gen != loadGen || !l.equals(loc) || !d.equals(day)) return;
+                        if (fp != null) applyPackets(fp);
+                        if (fr != null) applyState(fr);
+                        ready = true;
+                        rebuildScans();
+                        renderAll();
+                        flushWaiting();
+                        refresh(true);
+                    }
+                });
+            }
+        });
+    }
+
+    /** screen thread, quick: swap in packets parsed in the background */
+    private void applyPackets(Parsed pp) {
+        packets.clear(); packets.putAll(pp.packets);
+        index.clear(); index.putAll(pp.index);
+        bags.clear(); bags.putAll(pp.bags);
+        psig = pp.psig;
+    }
+
+    /** scans made while the list was loading (a second or two after opening) are checked now */
+    private void flushWaiting() {
+        if (waiting.isEmpty()) return;
+        List<String[]> w = new ArrayList<>(waiting);
+        waiting.clear();
+        for (String[] x : w) submit(x[0], x[1]);
+    }
+
+    /** screen thread: everything except the packets (scans, tasks, sync line...) - small and quick */
+    private void applyState(JSONObject st) {
         serverScans = st.optJSONArray("scans") != null ? st.optJSONArray("scans") : new JSONArray();
         gotLater.clear();
         JSONArray gl = st.optJSONArray("got_later");
@@ -538,42 +657,28 @@ public class MainActivity extends Activity {
         syncRow = st.optJSONObject("sync");
         syncing = st.optBoolean("syncing");
         syncProg = st.optJSONObject("sync_progress");
-        if (save) {
-            try {
-                JSONObject copy = new JSONObject(st.toString());
-                if (p == null) {
-                    String old = store.getCache("state:" + loc + ":" + day);
-                    if (old != null) copy.put("packets", new JSONObject(old).optJSONArray("packets"));
-                }
-                store.put("state:" + loc + ":" + day, copy.toString());
-            } catch (Exception ignored) { }
-        }
-    }
-
-    private void addKey(String k, String t) {
-        if (k == null || k.isEmpty()) return;
-        String K = k.toUpperCase();
-        if (!index.containsKey(K)) index.put(K, t);
     }
 
     private void refresh(final boolean full) {
-        final String l = loc, d = day;
-        bg.execute(new Runnable() {
+        final String l = loc, d = day, ps = psig;
+        exec(bg, new Runnable() {
             @Override public void run() {
                 try {
-                    final JSONObject st = Api.get("/api/state?loc=" + Api.encode(l) + "&day=" + d + (full ? "" : "&psig=" + Api.encode(psig)));
+                    final JSONObject st = Api.get("/api/state?loc=" + Api.encode(l) + "&day=" + d + (full ? "" : "&psig=" + Api.encode(ps)));
                     if (!st.optBoolean("ok")) return;
                     online = true;
-                    ui.post(new Runnable() {
+                    final Parsed pp = digest(st, l, d, true);         // the heavy part, here in the background
+                    post(new Runnable() {
                         @Override public void run() {
                             if (!l.equals(loc) || !d.equals(day)) return;
-                            applyState(st, true);
+                            if (pp != null) { applyPackets(pp); Images.prefetch(pp.photos); }   // photos kept on the phone (offline)
+                            applyState(st);
                             rebuildScans();
                             renderAll();
                         }
                     });
                 } catch (Api.LoginRequired e) { needLogin(); }
-                catch (Exception e) { online = false; ui.post(new Runnable() { @Override public void run() { renderTask(); } }); }
+                catch (Throwable e) { online = false; post(new Runnable() { @Override public void run() { renderTask(); } }); }
             }
         });
     }
@@ -593,11 +698,11 @@ public class MainActivity extends Activity {
         psig = "";
         packets.clear();
         index.clear();
+        batch = null; batches = new JSONArray(); serverScans = new JSONArray(); last = null;
         loadCachedList();
         rebuildScans();
         if (card != null) showEmpty();
         renderAll();
-        refresh(true);
         toast("New day - now on " + Ui.day(day) + ". The first scan starts Task 1.");
         return true;
     }
@@ -605,7 +710,7 @@ public class MainActivity extends Activity {
     private void syncFlipkart() {
         toast("Getting the list from Flipkart…");
         final String l = loc, d = day;
-        bg.execute(new Runnable() {
+        exec(watch, new Runnable() {
             @Override public void run() {
                 try {
                     JSONObject a = new JSONObject();
@@ -619,7 +724,7 @@ public class MainActivity extends Activity {
                         Thread.sleep(i < 3 ? 1500 : 3000);
                         final JSONObject st = Api.get("/api/state?loc=" + Api.encode(l) + "&day=" + d + "&psig=" + Api.encode(psig));
                         if (!st.optBoolean("ok")) continue;
-                        ui.post(new Runnable() {
+                        post(new Runnable() {
                             @Override public void run() {
                                 if (!l.equals(loc) || !d.equals(day)) return;
                                 syncing = st.optBoolean("syncing");
@@ -631,7 +736,7 @@ public class MainActivity extends Activity {
                         JSONObject sr = st.optJSONObject("sync");
                         if (!st.optBoolean("syncing") && (seen || (sr != null && sr.optDouble("at") >= t0) || i > 4)) {
                             final JSONObject fin = sr;
-                            ui.post(new Runnable() {
+                            post(new Runnable() {
                                 @Override public void run() {
                                     if (fin != null && fin.optInt("ok") == 0) toast("Flipkart: " + fin.optString("message"));
                                     else toast("List updated" + (fin != null ? ": " + fin.optInt("packets") + " packets" : ""));
@@ -738,6 +843,11 @@ public class MainActivity extends Activity {
 
     void submit(String raw, String via) {
         if (input != null) input.setText("");
+        if (!ready) {
+            waiting.add(new String[]{raw, via});
+            if (waiting.size() == 1) toast("Loading the list on this phone - the scan is checked in a moment");
+            return;
+        }
         final String code = normalize(raw);
         if (code.isEmpty()) return;
         if (paused()) {
@@ -819,7 +929,7 @@ public class MainActivity extends Activity {
         if (sending || loginNeeded || store == null) return;
         if (store.unsentCount() == 0) return;
         sending = true;
-        net.execute(new Runnable() {
+        exec(net, new Runnable() {
             @Override public void run() {
                 boolean any = false;
                 try {
@@ -838,7 +948,7 @@ public class MainActivity extends Activity {
                         final String cid = s.cid, sres = sc.optString("res"), local = s.localRes;
                         final JSONObject pk = r.optJSONObject("packet"), first = r.optJSONObject("first");
                         final long sid = sc.optLong("id");
-                        ui.post(new Runnable() {
+                        post(new Runnable() {
                             @Override public void run() { confirmed(cid, sid, sres, local, pk, first); }
                         });
                     }
@@ -847,7 +957,7 @@ public class MainActivity extends Activity {
                 catch (Exception e) { online = false; }
                 sending = false;
                 final boolean refreshNow = any;
-                ui.post(new Runnable() {
+                post(new Runnable() {
                     @Override public void run() {
                         renderTask();
                         if (refreshNow) { ui.removeCallbacks(lightRefresh); ui.postDelayed(lightRefresh, 2000); }
@@ -1179,14 +1289,14 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Undo", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         if (it.id <= 0) { toast("Still being sent - try again in a few seconds"); return; }
-                        bg.execute(new Runnable() {
+                        exec(bg, new Runnable() {
                             @Override public void run() {
                                 try {
                                     JSONObject a = new JSONObject(); a.put("id", it.id);
                                     final JSONObject r = Api.post("/api/scan/delete", a);
                                     if (!r.optBoolean("ok")) { toastBg(r.optString("error")); return; }
                                     if (!it.cid.isEmpty()) store.markUndone(it.cid);
-                                    ui.post(new Runnable() { @Override public void run() { toast("Scan removed"); showEmpty(); refresh(false); } });
+                                    post(new Runnable() { @Override public void run() { toast("Scan removed"); showEmpty(); refresh(false); } });
                                 } catch (Api.LoginRequired e) { needLogin(); }
                                 catch (Exception e) { toastBg("No network - try again"); }
                             }
@@ -1199,7 +1309,7 @@ public class MainActivity extends Activity {
         if (batch == null) return;
         final boolean pause = !paused();
         final long id = batch.optLong("id");
-        bg.execute(new Runnable() {
+        exec(bg, new Runnable() {
             @Override public void run() {
                 try {
                     JSONObject a = new JSONObject(); a.put("id", id); a.put("pause", pause);
@@ -1229,7 +1339,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Finish task", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         final String pc = count.getText().toString().trim();
-                        bg.execute(new Runnable() {
+                        exec(bg, new Runnable() {
                             @Override public void run() {
                                 try {
                                     JSONObject a = new JSONObject(); a.put("id", id); a.put("physical_count", pc);
@@ -1257,7 +1367,7 @@ public class MainActivity extends Activity {
                 .setPositiveButton("Start", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         final String n = name.getText().toString(), c = courier.getText().toString();
-                        bg.execute(new Runnable() {
+                        exec(bg, new Runnable() {
                             @Override public void run() {
                                 try {
                                     JSONObject a = new JSONObject(); a.put("loc", loc); a.put("day", day); a.put("name", n); a.put("courier", c);
@@ -1280,7 +1390,7 @@ public class MainActivity extends Activity {
         for (int i = 0; i < names.length; i++) names[i] = closed.get(i).optString("name") + " · " + closed.get(i).optInt("ok_n") + " OK";
         new AlertDialog.Builder(this).setTitle("Reopen which task?").setItems(names, new DialogInterface.OnClickListener() {
             @Override public void onClick(DialogInterface d, final int w) {
-                bg.execute(new Runnable() {
+                exec(bg, new Runnable() {
                     @Override public void run() {
                         try {
                             JSONObject a = new JSONObject(); a.put("id", closed.get(w).optLong("id"));
@@ -1342,7 +1452,6 @@ public class MainActivity extends Activity {
         rebuildScans();
         showEmpty();
         renderAll();
-        refresh(true);
     }
 
     private void menu() {
@@ -1647,7 +1756,7 @@ public class MainActivity extends Activity {
     // ================================================================== misc
     void toast(String s) { Toast.makeText(this, s, Toast.LENGTH_SHORT).show(); }
 
-    void toastBg(final String s) { ui.post(new Runnable() { @Override public void run() { toast(s); } }); }
+    void toastBg(final String s) { post(new Runnable() { @Override public void run() { toast(s); } }); }
 
     void problemSaved(String tracking, JSONObject issue) {
         try { issues.put(tracking, issue); } catch (Exception ignored) { }
