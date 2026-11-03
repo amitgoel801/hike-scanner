@@ -11,8 +11,8 @@ android {
         minSdk 21            // Android 5.0 and newer (incl. Android 11 / 12 handhelds)
         targetSdk 34
         // keep in step with AppInfo.java
-        versionCode 5
-        versionName '1.4'
+        versionCode 6
+        versionName '1.5'
     }
 
     signingConfigs {

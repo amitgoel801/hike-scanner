@@ -886,7 +886,7 @@ public class MainActivity extends Activity {
     private void renderTop() {
         if (locText == null) return;
         locText.setText("📦 " + locName() + " ▾");
-        dayText.setText(day.equals(Ui.today()) ? "Today ▾" : Ui.day(day) + " ▾");
+        dayText.setText(day.equals(Ui.today()) ? "Today ▾" : day.equals(Ui.shift(Ui.today(), -1)) ? "Yesterday ▾" : Ui.day(day) + " ▾");
         String line;
         int expN = 0;
         for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && p.optInt("x") != 1) expN++;
@@ -1294,7 +1294,21 @@ public class MainActivity extends Activity {
         }).show();
     }
 
+    /** Today / Yesterday / Day before / Pick a date */
     private void chooseDay() {
+        final String t = Ui.today(), y = Ui.shift(t, -1), y2 = Ui.shift(t, -2);
+        String[] items = {"Today (" + Ui.day(t) + ")", "Yesterday (" + Ui.day(y) + ")", "Day before (" + Ui.day(y2) + ")", "📅 Pick a date…"};
+        new AlertDialog.Builder(this).setTitle("Which day?").setItems(items, new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int w) {
+                if (w == 3) { pickDay(); return; }
+                day = w == 0 ? t : w == 1 ? y : y2;
+                autoDay = day.equals(Ui.today());
+                switchView();
+            }
+        }).show();
+    }
+
+    private void pickDay() {
         Calendar c = Calendar.getInstance(Ui.IST);
         try { String[] p = day.split("-"); c.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2])); } catch (Exception ignored) { }
         new DatePickerDialog(this, new DatePickerDialog.OnDateSetListener() {
@@ -1463,6 +1477,9 @@ public class MainActivity extends Activity {
     private void checkUpdate() {
         JSONObject app = me.optJSONObject("app");
         if (app == null || app.optInt("version_code") <= AppInfo.VERSION_CODE) return;
+        String askedKey = "update_asked_" + app.optInt("version_code");
+        if (Ui.today().equals(dev.getString(askedKey, ""))) return;          // asked already today - no popup every time
+        dev.edit().putString(askedKey, Ui.today()).apply();
         final String url = app.optString("url");
         new AlertDialog.Builder(this).setTitle("New app version " + app.optString("version_name"))
                 .setMessage(app.optString("notes", "A newer version of Hike Scan is ready.") + "\n\nYour scans are kept during the update.")

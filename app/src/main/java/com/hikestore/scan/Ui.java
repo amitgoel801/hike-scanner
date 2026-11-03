@@ -102,6 +102,18 @@ public final class Ui {
         return f.format(new Date());
     }
 
+    /** "2026-11-03" moved by n days */
+    public static String shift(String iso, int n) {
+        try {
+            java.util.Calendar c = java.util.Calendar.getInstance(IST);
+            String[] p = iso.split("-");
+            c.set(Integer.parseInt(p[0]), Integer.parseInt(p[1]) - 1, Integer.parseInt(p[2]), 12, 0, 0);
+            c.add(java.util.Calendar.DAY_OF_MONTH, n);
+            return String.format(java.util.Locale.US, "%04d-%02d-%02d", c.get(java.util.Calendar.YEAR), c.get(java.util.Calendar.MONTH) + 1,
+                    c.get(java.util.Calendar.DAY_OF_MONTH));
+        } catch (Exception e) { return iso; }
+    }
+
     public static String day(String iso) {
         try {
             SimpleDateFormat in = new SimpleDateFormat("yyyy-MM-dd", Locale.US);
