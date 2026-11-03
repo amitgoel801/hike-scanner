@@ -198,6 +198,7 @@ public class MainActivity extends Activity {
         else registerReceiver(scanReceiver, f);
         focusInput();
         kickSender();
+        newDayCheck();
     }
 
     @Override protected void onPause() {
@@ -207,12 +208,9 @@ public class MainActivity extends Activity {
     }
 
     @Override public void onBackPressed() {
-        new AlertDialog.Builder(this).setTitle("Leave scanning?")
-                .setMessage("All scans are saved on this phone" + (store.unsentCount() > 0 ? " and " + store.unsentCount() + " will be sent when you open the app again." : "."))
-                .setPositiveButton("Leave", new DialogInterface.OnClickListener() {
-                    @Override public void onClick(DialogInterface d, int w) { finish(); }
-                })
-                .setNegativeButton("Keep scanning", null).show();
+        // back = home screen. Every scan is already saved on this phone; unsent ones go out in the background.
+        if (store != null && store.unsentCount() > 0) toast(store.unsentCount() + " scans will be sent in the background");
+        finish();
     }
 
     private void toLogin(String why) {
@@ -272,6 +270,9 @@ public class MainActivity extends Activity {
         top.setBackgroundColor(Ui.DARK);
         top.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(6), Ui.dp(6));
         LinearLayout tr = Ui.row(this);
+        TextView backBtn = topIcon("←");
+        backBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { onBackPressed(); } });
+        tr.addView(backBtn);
         locText = Ui.text(this, "", 16, Ui.WHITE, true);
         locText.setSingleLine(true);
         locText.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { chooseLocation(); } });
@@ -574,10 +575,27 @@ public class MainActivity extends Activity {
 
     private final Runnable ticker = new Runnable() {
         @Override public void run() {
-            refresh(false);
+            if (!newDayCheck()) refresh(false);
             ui.postDelayed(this, 30000);
         }
     };
+
+    /** the app stayed open past midnight: move from yesterday to today (only if we were on "today") */
+    private boolean autoDay = true;
+    private boolean newDayCheck() {
+        if (!autoDay || day.equals(Ui.today())) return false;
+        day = Ui.today();
+        psig = "";
+        packets.clear();
+        index.clear();
+        loadCachedList();
+        rebuildScans();
+        if (card != null) showEmpty();
+        renderAll();
+        refresh(true);
+        toast("New day - now on " + Ui.day(day) + ". The first scan starts Task 1.");
+        return true;
+    }
 
     private void syncFlipkart() {
         toast("Getting the list from Flipkart…");
@@ -731,6 +749,7 @@ public class MainActivity extends Activity {
         s.code = code; s.raw = raw; s.loc = loc; s.day = day; s.at = System.currentTimeMillis() / 1000.0;
         s.batchId = batch != null ? batch.optLong("id") : 0; s.localRes = res; s.tracking = p != null ? p.optString("t") : "";
         s.user = me.optString("user", "");
+        s.manual = "manual".equals(via);
         store.add(s);
         // 2) show it
         Item it = new Item();
@@ -790,6 +809,7 @@ public class MainActivity extends Activity {
                         a.put("loc", s.loc); a.put("day", s.day); a.put("code", s.raw); a.put("client_id", s.cid);
                         a.put("at", s.at); a.put("device", Build.MANUFACTURER + " " + Build.MODEL + " app" + AppInfo.VERSION_NAME);
                         a.put("local", s.localRes);
+                        if (s.manual) a.put("manual", true);
                         if (s.batchId > 0) a.put("batch_id", s.batchId);
                         JSONObject r = Api.post("/api/scan", a);
                         if (!r.optBoolean("ok")) { store.markError(s.cid, r.optString("error")); continue; }
@@ -1272,6 +1292,7 @@ public class MainActivity extends Activity {
         new DatePickerDialog(this, new DatePickerDialog.OnDateSetListener() {
             @Override public void onDateSet(DatePicker v, int y, int m, int d) {
                 day = String.format(java.util.Locale.US, "%04d-%02d-%02d", y, m + 1, d);
+                autoDay = day.equals(Ui.today());
                 switchView();
             }
         }, c.get(Calendar.YEAR), c.get(Calendar.MONTH), c.get(Calendar.DAY_OF_MONTH)).show();
@@ -1288,26 +1309,63 @@ public class MainActivity extends Activity {
     }
 
     private void menu() {
-        final String[] items = {"📭 Request OBD (open box)", "⟳ Refresh list from Flipkart", "＋ Start new task", "↺ Reopen a finished task", "🕘 History",
+        final String[] items = {"⌨ Label not scanning - type order / tracking no.", "📭 Request OBD (open box)", "⟳ Refresh list from Flipkart",
+                "＋ Start new task", "↺ Reopen a finished task", "🕘 History",
                 "📋 Not received yet", "⚠ Report a problem packet", "📱 This device", "⇪ Send this phone's scans again",
-                "Disconnect this device"};
+                "Disconnect this device", "🏠 Home"};
         new AlertDialog.Builder(this).setTitle("Hike Scan " + AppInfo.VERSION_NAME + " · 📱 " + Api.deviceName())
                 .setItems(items, new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) {
                         switch (w) {
-                            case 0: ObdActivity.start(MainActivity.this, loc, day, locName()); break;
-                            case 1: syncFlipkart(); break;
-                            case 2: newTask(); break;
-                            case 3: reopenTask(); break;
-                            case 4: history("task", "all"); break;
-                            case 5: history("day", "missing"); break;
-                            case 6: Problems.start(MainActivity.this, loc, day, "", "", me); break;
-                            case 7: deviceSettings(); break;
-                            case 8: resendAll(); break;
-                            case 9: logout(); break;
+                            case 0: typeByHand(); break;
+                            case 1: ObdActivity.start(MainActivity.this, loc, day, locName()); break;
+                            case 2: syncFlipkart(); break;
+                            case 3: newTask(); break;
+                            case 4: reopenTask(); break;
+                            case 5: history("task", "all"); break;
+                            case 6: history("day", "missing"); break;
+                            case 7: Problems.start(MainActivity.this, loc, day, "", "", me); break;
+                            case 8: deviceSettings(); break;
+                            case 9: resendAll(); break;
+                            case 10: logout(); break;
+                            case 11: finish(); break;
                         }
                     }
                 }).show();
+    }
+
+    /** label torn / not scanning: type the order ID, order item ID or tracking number printed on it */
+    private void typeByHand() {
+        final EditText et = new EditText(this);
+        et.setSingleLine(true);
+        et.setHint("Order ID (OD…), order item ID or tracking no.");
+        et.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        new AlertDialog.Builder(this).setTitle("Label not scanning").setView(et)
+                .setMessage("Type the number you can read on the label. If it is in the list, the packet is shown - then confirm.")
+                .setPositiveButton("Find", new DialogInterface.OnClickListener() {
+                    @Override public void onClick(DialogInterface d, int w) {
+                        final String code = normalize(et.getText().toString());
+                        if (code.isEmpty()) return;
+                        final JSONObject p = localMatch(code);
+                        if (p == null) {
+                            new AlertDialog.Builder(MainActivity.this).setTitle("Not found")
+                                    .setMessage(code + " is not in Flipkart's list here (last 3 days). Save it as a 'not in list' packet?")
+                                    .setPositiveButton("Save", new DialogInterface.OnClickListener() {
+                                        @Override public void onClick(DialogInterface d2, int w2) { submit(code, "manual"); }
+                                    }).setNegativeButton("Cancel", null).show();
+                            return;
+                        }
+                        JSONObject i0 = firstItem(p);
+                        Item got = okForPacket(p);
+                        new AlertDialog.Builder(MainActivity.this).setTitle(i0 != null ? i0.optString("sku") : p.optString("t"))
+                                .setMessage((i0 != null ? i0.optString("ti") + "\n" : "") + "Tracking: " + p.optString("t") + "\nOrder: " + p.optString("o")
+                                        + "\nExpected: " + Ui.day(p.optString("d"))
+                                        + (got != null ? "\n\nAlready received " + Ui.time(got.at) + " by " + got.by : ""))
+                                .setPositiveButton(got != null ? "Scan anyway" : "✔ Mark received", new DialogInterface.OnClickListener() {
+                                    @Override public void onClick(DialogInterface d2, int w2) { submit(p.optString("t"), "manual"); }
+                                }).setNegativeButton("Cancel", null).show();
+                    }
+                }).setNegativeButton("Cancel", null).show();
     }
 
     private void resendAll() {
@@ -1463,7 +1521,7 @@ public class MainActivity extends Activity {
         Set<String> got = new HashSet<>();
         for (Item i : scans) if ("ok".equals(i.res)) got.add(i.tracking);
         List<JSONObject> out = new ArrayList<>();
-        for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && !got.contains(p.optString("t"))) out.add(p);
+        for (JSONObject p : packets.values()) if (day.equals(p.optString("d")) && p.optInt("x") != 1 && !got.contains(p.optString("t"))) out.add(p);
         return out;
     }
 
@@ -1514,10 +1572,14 @@ public class MainActivity extends Activity {
               .append("\nPrice: ₹").append((long) o.optDouble("pr", 0)).append("\nReason: ").append(o.optString("re"))
               .append(o.optString("sr").isEmpty() ? "" : " · " + o.optString("sr"));
         }
-        new AlertDialog.Builder(this).setTitle(firstItem(p) != null ? firstItem(p).optString("sku") : tracking).setMessage(sb.toString())
+        AlertDialog.Builder bd = new AlertDialog.Builder(this).setTitle(firstItem(p) != null ? firstItem(p).optString("sku") : tracking).setMessage(sb.toString())
                 .setPositiveButton("Report problem", new DialogInterface.OnClickListener() {
                     @Override public void onClick(DialogInterface d, int w) { Problems.start(MainActivity.this, loc, day, p.optString("t"), code, me); }
-                }).setNegativeButton("Close", null).show();
+                }).setNegativeButton("Close", null);
+        if (got == null) bd.setNeutralButton("✔ Received by hand", new DialogInterface.OnClickListener() {
+            @Override public void onClick(DialogInterface d, int w) { submit(p.optString("t"), "manual"); toast("Marked received by hand"); }
+        });
+        bd.show();
     }
 
     // ================================================================== problems: photos / videos

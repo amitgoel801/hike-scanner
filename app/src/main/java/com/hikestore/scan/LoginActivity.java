@@ -187,7 +187,7 @@ public class LoginActivity extends Activity {
                         spin.setVisibility(View.GONE);
                         go.setEnabled(true);
                         if (e2 != null) { msg.setTextColor(Ui.ERR); msg.setText(e2); return; }
-                        startActivity(new Intent(LoginActivity.this, MainActivity.class));
+                        startActivity(new Intent(LoginActivity.this, HomeActivity.class));
                         finish();
                     }
                 });

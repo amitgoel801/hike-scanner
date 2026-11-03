@@ -23,25 +23,27 @@ public final class Store extends SQLiteOpenHelper {
         return inst;
     }
 
-    private Store(Context c) { super(c, "hikescan.db", null, 1); }
+    private Store(Context c) { super(c, "hikescan.db", null, 2); }
 
     @Override public void onCreate(SQLiteDatabase db) {
         db.execSQL("CREATE TABLE scans (cid TEXT PRIMARY KEY, code TEXT NOT NULL, raw TEXT NOT NULL, loc TEXT NOT NULL," +
                 " day TEXT NOT NULL, at REAL NOT NULL, batch_id INTEGER, local_res TEXT NOT NULL, tracking TEXT," +
                 " server_res TEXT, server_id INTEGER, sent INTEGER NOT NULL DEFAULT 0, tries INTEGER NOT NULL DEFAULT 0," +
-                " err TEXT, username TEXT)");
+                " err TEXT, username TEXT, manual INTEGER NOT NULL DEFAULT 0)");
         db.execSQL("CREATE INDEX scans_day ON scans(loc, day)");
         db.execSQL("CREATE INDEX scans_sent ON scans(sent)");
         db.execSQL("CREATE TABLE cache (k TEXT PRIMARY KEY, v TEXT NOT NULL, at REAL NOT NULL)");
     }
 
-    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {}
+    @Override public void onUpgrade(SQLiteDatabase db, int o, int n) {
+        if (o < 2) db.execSQL("ALTER TABLE scans ADD COLUMN manual INTEGER NOT NULL DEFAULT 0");   // 1.4: "received by hand"
+    }
 
     public static class Scan {
         public String cid, code, raw, loc, day, localRes, tracking, serverRes, err, user;
         public double at;
         public long batchId, serverId;
-        public boolean sent;
+        public boolean sent, manual;
         public String res() { return serverRes != null && !serverRes.isEmpty() ? serverRes : localRes; }
     }
 
@@ -49,7 +51,7 @@ public final class Store extends SQLiteOpenHelper {
         ContentValues v = new ContentValues();
         v.put("cid", s.cid); v.put("code", s.code); v.put("raw", s.raw); v.put("loc", s.loc); v.put("day", s.day);
         v.put("at", s.at); if (s.batchId > 0) v.put("batch_id", s.batchId); v.put("local_res", s.localRes);
-        v.put("tracking", s.tracking); v.put("sent", 0); v.put("username", s.user);
+        v.put("tracking", s.tracking); v.put("sent", 0); v.put("username", s.user); v.put("manual", s.manual ? 1 : 0);
         getWritableDatabase().insertOrThrow("scans", null, v);
     }
 
@@ -117,6 +119,7 @@ public final class Store extends SQLiteOpenHelper {
                 s.sent = c.getInt(c.getColumnIndexOrThrow("sent")) == 1;
                 s.err = c.getString(c.getColumnIndexOrThrow("err"));
                 s.user = c.getString(c.getColumnIndexOrThrow("username"));
+                s.manual = c.getInt(c.getColumnIndexOrThrow("manual")) == 1;
                 out.add(s);
             }
         } finally { c.close(); }
