@@ -35,6 +35,12 @@ import java.util.Map;
 public class StartupTest {
     private static final String LOC = "LOC07bff30bef5a4d82ae4b8cbe1968bceb";
     private Context ctx;
+    static final java.util.List<String> CRASHES = java.util.Collections.synchronizedList(new java.util.ArrayList<String>());
+
+    @org.junit.After public void noCrash() throws Exception {
+        waitIdle(300);
+        assertTrue("app crashed: " + CRASHES, CRASHES.isEmpty());
+    }
     private String day;
 
     private static void resetStatic(Class<?> c, String name, Object v) throws Exception {
@@ -51,6 +57,15 @@ public class StartupTest {
         resetStatic(Images.class, "dir", null);
         resetStatic(Crash.class, "on", false);
         Crash.install(ctx);
+        // a crash in any thread: print it in full and fail the test (instead of the app's handler ending the test run)
+        Thread.setDefaultUncaughtExceptionHandler(new Thread.UncaughtExceptionHandler() {
+            @Override public void uncaughtException(Thread t, Throwable e) {
+                System.out.println("APP CRASH in thread '" + t.getName() + "':");
+                e.printStackTrace(System.out);
+                CRASHES.add(t.getName() + ": " + e);
+            }
+        });
+        CRASHES.clear();
         JSONObject me = new JSONObject();
         me.put("user", "📱 Test phone");
         me.put("default_location", LOC);
