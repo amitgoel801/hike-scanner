@@ -252,6 +252,8 @@ public class StartupTest {
         m.submit(b.getString("t"), "keyboard"); waitIdle(200);
         m.submit(c.getString("t"), "keyboard"); waitIdle(200);
         m.submit("82299030505", "keyboard"); waitIdle(200);
+        Field ls = MainActivity.class.getDeclaredField("lastSubmitAt"); ls.setAccessible(true);
+        ls.setLong(m, ls.getLong(m) - 3000);           // scanned again 3 s later (within 2 s it is the same read)
         m.submit("82299030505", "keyboard"); waitIdle(400);
         assertEquals("ok", resOf(m, a.getString("t")));
         assertEquals("other return of the same order item = another packet", "ok", resOf(m, b.getString("t")));
