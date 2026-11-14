@@ -804,18 +804,18 @@ public class MainActivity extends Activity {
     }
 
     /** already scanned OK - by tracking number, or by order item (other barcode of the same label) */
+    /** already scanned OK? Same tracking, or the same Flipkart RETURN under another number (re-labelled).
+     *  NOT just the same order item: one order item can come back as two real packets (two returns) -
+     *  12 Nov FMPR0997286494 was wrongly "already scanned" 13 times because of FMPR0997286539. */
     private Item okForPacket(JSONObject p) {
         Item f = okFor(p.optString("t"));
         if (f != null) return f;
-        Set<String> ois = new HashSet<>();
-        JSONArray a = p.optJSONArray("i");
-        if (a != null) for (int k = 0; k < a.length(); k++) { String oi = a.optJSONObject(k).optString("oi"); if (!oi.isEmpty()) ois.add(oi); }
-        if (ois.isEmpty()) return null;
+        String rid = p.optString("r");
+        if (rid.isEmpty()) return null;
         for (Item i : scans) {
             if (!"ok".equals(i.res) || i.tracking.isEmpty()) continue;
             JSONObject q = packets.get(i.tracking);
-            JSONArray b = q != null ? q.optJSONArray("i") : null;
-            if (b != null) for (int k = 0; k < b.length(); k++) if (ois.contains(b.optJSONObject(k).optString("oi"))) return i;
+            if (q != null && rid.equals(q.optString("r"))) return i;
         }
         return null;
     }
@@ -868,7 +868,7 @@ public class MainActivity extends Activity {
                 else res = seenNf ? "duplicate" : "not_found";
             }
         }
-        feedback("ok".equals(res) && pieces(p) > 1 ? "multi" : res);
+        feedback("ok".equals(res) && pieces(p) > 1 ? "multi" : "duplicate".equals(res) && p == null ? "not_found" : res);
         // 1) save on the phone first
         Store.Scan s = new Store.Scan();
         s.cid = dev.getString("id", "x") + "-" + Long.toString(System.currentTimeMillis(), 36) + "-" + UUID.randomUUID().toString().substring(0, 5);
@@ -1161,14 +1161,15 @@ public class MainActivity extends Activity {
 
     private void showResult(final Item it, final JSONObject p, Item first) {
         card.removeAllViews();
-        int col = colorOf(it.res);
+        final boolean again = "duplicate".equals(it.res) && p == null;     // an unknown label scanned again
+        int col = colorOf(again ? "not_found" : it.res);
         LinearLayout c = Ui.col(this);
         c.setBackground(Ui.box(Ui.WHITE, col, 12));
         ((android.graphics.drawable.GradientDrawable) c.getBackground()).setStroke(Ui.dp(3), col);
         String head = label(it.res);
         if ("not_found".equals(it.res)) head = "⚠ NOT IN FLIPKART LIST - keep aside";
         if ("ok".equals(it.res)) head = "✔ OK";
-        if ("duplicate".equals(it.res)) head = "✖ ALREADY SCANNED";
+        if ("duplicate".equals(it.res)) head = again ? "⚠ NOT IN LIST - scanned again" : "✖ ALREADY SCANNED";
         if ("rescan".equals(it.res)) head = "↻ SCAN AGAIN";
         if ("bag".equals(it.res)) head = "🛍 BAG LABEL - open the bag";
         LinearLayout hr = Ui.row(this);
@@ -1258,12 +1259,17 @@ public class MainActivity extends Activity {
             boolean square = "rescan".equals(it.res) && it.code.split("\\|").length > 3;   // Ekart's square (Data Matrix) code
             TextView m = Ui.text(this, square ? "That was the square code on the label. It only has the courier's routing details, not the tracking number. Scan the long barcode at the bottom of the label (FMPP… / FMPC… / FMPR…) or the AWB barcode."
                     : "rescan".equals(it.res) ? "The code could not be read properly. Scan the label again."
-                    : "This packet is not in Flipkart's list for this location. Keep it aside - it is saved and checked again when the list refreshes.", 13, Ui.INK2, false);
+                    : "This label is not in Flipkart's list. If the packet has a Flipkart label with the order ID (OD…), press \"Order ID\" and type it - then it counts as received. Otherwise keep it aside.", 13, Ui.INK2, false);
             m.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
             c.addView(m);
         }
         LinearLayout ar = Ui.row(this);
         ar.setPadding(Ui.dp(10), Ui.dp(4), Ui.dp(10), Ui.dp(10));
+        if (p == null && ("not_found".equals(it.res) || again)) {
+            Button lb = small("🔗 Order ID");
+            lb.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { linkDialog(it.code); } });
+            ar.addView(lb);
+        }
         Button pb = small("⚠ Problem");
         pb.setOnClickListener(new View.OnClickListener() {
             @Override public void onClick(View v) { Problems.start(MainActivity.this, loc, day, p != null ? p.optString("t") : it.code, it.code, me); }
@@ -1279,6 +1285,90 @@ public class MainActivity extends Activity {
         }
         c.addView(ar);
         card.addView(c, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    // ================================================================== a label that is not in the list -> its packet
+    private void linkDialog(final String code) {
+        final EditText q = new EditText(this);
+        q.setHint("Order ID (OD…) - last 6+ digits");
+        q.setSingleLine(true);
+        q.setInputType(android.text.InputType.TYPE_CLASS_TEXT | android.text.InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS);
+        LinearLayout box = Ui.col(this);
+        Ui.pad(box, 14);
+        box.addView(Ui.text(this, "Type the order ID printed on the Flipkart label of this packet (SKU or FMP… tracking also work). " +
+                "The label " + code + " is remembered - next time it is found by itself.", 12, Ui.INK2, false));
+        box.addView(q);
+        final AlertDialog d = new AlertDialog.Builder(this).setTitle("Which packet is " + code + "?").setView(box)
+                .setPositiveButton("Search", null).setNegativeButton("Cancel", null).create();
+        d.setOnShowListener(new DialogInterface.OnShowListener() {
+            @Override public void onShow(DialogInterface di) {
+                d.getButton(AlertDialog.BUTTON_POSITIVE).setOnClickListener(new View.OnClickListener() {
+                    @Override public void onClick(View v) { linkSearch(code, q.getText().toString().trim(), d); }
+                });
+            }
+        });
+        q.setOnEditorActionListener(new TextView.OnEditorActionListener() {
+            @Override public boolean onEditorAction(TextView v, int a, android.view.KeyEvent e) { linkSearch(code, q.getText().toString().trim(), d); return true; }
+        });
+        d.show();
+        q.requestFocus();
+    }
+
+    private void linkSearch(final String code, final String q, final AlertDialog ask) {
+        if (q.replace(" ", "").length() < 4) { toast("Type at least 4 characters"); return; }
+        final String l = loc, dd = day;
+        exec(bg, new Runnable() {
+            @Override public void run() {
+                try {
+                    final JSONObject r = Api.get("/api/link/find?loc=" + Api.encode(l) + "&day=" + dd + "&q=" + Api.encode(q));
+                    final JSONArray ps = r.optJSONArray("packets");
+                    post(new Runnable() {
+                        @Override public void run() {
+                            if (ps == null || ps.length() == 0) { toast("No packet found for " + q); return; }
+                            final String[] labels = new String[ps.length()];
+                            for (int k = 0; k < ps.length(); k++) {
+                                JSONObject p = ps.optJSONObject(k);
+                                JSONArray its = p.optJSONArray("items");
+                                JSONObject i0 = its != null && its.length() > 0 ? its.optJSONObject(0) : new JSONObject();
+                                labels[k] = (i0.optString("sku").isEmpty() ? "(no details)" : i0.optString("sku")) + "\n" + p.optString("tracking_id") + " · " +
+                                        p.optString("order_id") + "\n" + (p.isNull("received") ? "NOT RECEIVED YET" : "already received") +
+                                        " · list " + Ui.day(p.optString("day"));
+                            }
+                            new AlertDialog.Builder(MainActivity.this).setTitle("Pick the packet").setItems(labels, new DialogInterface.OnClickListener() {
+                                @Override public void onClick(DialogInterface di, int w) {
+                                    ask.dismiss();
+                                    linkSave(code, ps.optJSONObject(w).optString("tracking_id"));
+                                }
+                            }).setNegativeButton("Back", null).show();
+                        }
+                    });
+                } catch (Api.LoginRequired e) { needLogin(); }
+                catch (Exception e) { toastBg("No network - try again"); }
+            }
+        });
+    }
+
+    private void linkSave(final String code, final String tracking) {
+        final String l = loc, dd = day;
+        exec(bg, new Runnable() {
+            @Override public void run() {
+                try {
+                    JSONObject a = new JSONObject();
+                    a.put("loc", l); a.put("day", dd); a.put("code", code); a.put("tracking", tracking);
+                    final JSONObject r = Api.post("/api/scan/link", a);
+                    if (!r.optBoolean("ok")) { toastBg(r.optString("error", "Could not link")); return; }
+                    post(new Runnable() {
+                        @Override public void run() {
+                            feedback("ok");
+                            toast("✔ " + code + " = packet " + tracking + " - counted as received");
+                            showEmpty();
+                            refresh(false);
+                        }
+                    });
+                } catch (Api.LoginRequired e) { needLogin(); }
+                catch (Exception e) { toastBg("No network - try again"); }
+            }
+        });
     }
 
     // ================================================================== actions

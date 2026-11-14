@@ -223,6 +223,44 @@ public class StartupTest {
         assertTrue(Api.loggedIn());
     }
 
+    private static String resOf(MainActivity a, String code) throws Exception {
+        Field f = MainActivity.class.getDeclaredField("scans");
+        f.setAccessible(true);
+        String r = null;
+        for (Object it : (java.util.List<?>) f.get(a)) {
+            Field c = it.getClass().getDeclaredField("code"); c.setAccessible(true);
+            Field rr = it.getClass().getDeclaredField("res"); rr.setAccessible(true);
+            if (code.equals(c.get(it))) r = (String) rr.get(it);
+        }
+        return r;
+    }
+
+    /** 12 Nov: two returns of ONE order item are two real packets; the same return re-labelled is one packet */
+    @Test public void sameOrderItemOtherReturnIsAnotherPacket() throws Exception {
+        JSONObject st = bigState(20, 0);
+        JSONArray p = st.getJSONArray("packets");
+        JSONObject a = p.getJSONObject(0), b = p.getJSONObject(1), c = p.getJSONObject(2);
+        String oi = a.getJSONArray("i").getJSONObject(0).getString("oi");
+        a.put("r", "RET-A");
+        b.put("r", "RET-B"); b.getJSONArray("i").getJSONObject(0).put("oi", oi);
+        c.put("r", "RET-A"); c.getJSONArray("i").getJSONObject(0).put("oi", oi);
+        Store.get(ctx).put("packets:" + LOC + ":" + day, new JSONObject().put("psig", "s").put("packets", p).toString());
+        ActivityController<MainActivity> ac = Robolectric.buildActivity(MainActivity.class).setup();
+        waitIdle(2500);
+        MainActivity m = ac.get();
+        m.submit(a.getString("t"), "keyboard"); waitIdle(200);
+        m.submit(b.getString("t"), "keyboard"); waitIdle(200);
+        m.submit(c.getString("t"), "keyboard"); waitIdle(200);
+        m.submit("82299030505", "keyboard"); waitIdle(200);
+        m.submit("82299030505", "keyboard"); waitIdle(400);
+        assertEquals("ok", resOf(m, a.getString("t")));
+        assertEquals("other return of the same order item = another packet", "ok", resOf(m, b.getString("t")));
+        assertEquals("same return under another number = duplicate", "duplicate", resOf(m, c.getString("t")));
+        assertEquals("unknown label scanned again", "duplicate", resOf(m, "82299030505"));
+        assertFalse(m.isFinishing());
+        ac.pause().stop().destroy();
+    }
+
     @Test public void homeScreenOpens() throws Exception {
         Crash.save("The app closed (crash) - thread main", "java.lang.IllegalStateException: test");
         ActivityController<HomeActivity> ac = Robolectric.buildActivity(HomeActivity.class).setup();
