@@ -30,6 +30,12 @@ public final class Sounds {
         pcm.put("warn", build(new double[][]{{880, 0, .5, 2, .55, 300}, {880, .6, .5, 2, .55, 300}}));
         pcm.put("multi", build(new double[][]{{1500, 0, .12, 1, .4}, {2000, .16, .12, 1, .4}, {2600, .32, .18, 1, .4}}));
         pcm.put("rescan", build(new double[][]{{700, 0, .07, 1, .5}, {700, .12, .07, 1, .5}, {700, .24, .07, 1, .5}}));
+        // siren: a packet that was RECEIVED on an earlier day came again - keep it aside
+        double[][] sir = new double[8][];
+        for (int k = 0; k < 4; k++) { sir[2 * k] = new double[]{600, k * .6, .3, 2, .6, 1450}; sir[2 * k + 1] = new double[]{1450, k * .6 + .3, .3, 2, .6, 600}; }
+        pcm.put("siren", build(sir));
+        // late packet from an earlier list: genuine, a soft "ding-dong"
+        pcm.put("late", build(new double[][]{{1320, 0, .16, 0, .7}, {990, .2, .3, 0, .7}, {2300, .58, .08, 1, .3}}));
     }
 
     public void setVolume(double v) { volume = (float) Math.max(0, Math.min(1, v)); }
@@ -86,6 +92,8 @@ public final class Sounds {
         long[] p;
         switch (result) {
             case "duplicate": p = new long[]{0, 250, 90, 250, 90, 250}; break;
+            case "again": p = new long[]{0, 600, 150, 600, 150, 600, 150, 600}; break;
+            case "late": p = new long[]{0, 80, 80, 300}; break;
             case "not_found": p = new long[]{0, 500, 120, 500}; break;
             case "rescan": p = new long[]{0, 80, 60, 80, 60, 80}; break;
             case "multi": p = new long[]{0, 60, 60, 60, 60, 200}; break;

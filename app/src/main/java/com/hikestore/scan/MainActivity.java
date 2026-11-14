@@ -97,6 +97,9 @@ public class MainActivity extends Activity {
     /** one scan as shown on screen */
     static class Item {
         String cid = "", code = "", tracking = "", res = "", by = "", note = "";
+        String fday = "";          // "received before": the day it was received
+        JSONArray fpod;            // ... and the days of Flipkart's POD that have it
+        JSONObject late;           // a late packet: {lists: [earlier list days], pod: [...]}
         double at;
         long id, bid;
         boolean pending;
@@ -881,7 +884,15 @@ public class MainActivity extends Activity {
         if (code.length() < min || !CODE_OK.matcher(code).matches()) res = "rescan";
         else {
             p = localMatch(code);
-            if (p != null) { first = okForPacket(p); res = first != null ? "duplicate" : "ok"; }
+            if (p != null) {
+                first = okForPacket(p);
+                JSONObject ra = p.optJSONObject("ra");          // received on an EARLIER day already
+                if (first != null) res = "duplicate";
+                else if (ra != null) {
+                    res = "again";
+                    first = new Item(); first.at = ra.optDouble("at"); first.by = ra.optString("by"); first.fday = ra.optString("d"); first.fpod = ra.optJSONArray("pod");
+                } else res = "ok";
+            }
             else {
                 boolean seenNf = false;
                 for (Item i : scans) if ("not_found".equals(i.res) && code.equals(i.code)) { seenNf = true; break; }
@@ -889,7 +900,12 @@ public class MainActivity extends Activity {
                 else res = seenNf ? "duplicate" : "not_found";
             }
         }
-        feedback("ok".equals(res) && pieces(p) > 1 ? "multi" : "duplicate".equals(res) && p == null ? "not_found" : res);
+        JSONObject late = null;                                  // in an earlier day's list too (not delivered then)
+        if ("ok".equals(res) && p != null && !p.optString("ld").isEmpty()) {
+            try { late = new JSONObject().put("lists", new JSONArray().put(p.optString("ld"))).put("pod", p.optJSONArray("lp") != null ? p.optJSONArray("lp") : new JSONArray()); }
+            catch (Exception ignored) { }
+        }
+        feedback("ok".equals(res) && late != null ? "late" : "ok".equals(res) && pieces(p) > 1 ? "multi" : "duplicate".equals(res) && p == null ? "not_found" : res);
         // 1) save on the phone first
         Store.Scan s = new Store.Scan();
         s.cid = dev.getString("id", "x") + "-" + Long.toString(System.currentTimeMillis(), 36) + "-" + UUID.randomUUID().toString().substring(0, 5);
@@ -901,7 +917,7 @@ public class MainActivity extends Activity {
         // 2) show it
         Item it = new Item();
         it.cid = s.cid; it.code = code; it.tracking = s.tracking; it.res = res; it.at = s.at; it.by = s.user;
-        it.bid = s.batchId; it.pending = true;
+        it.bid = s.batchId; it.pending = true; it.late = late;
         scans.add(it);
         myCids.add(it.cid);
         last = it;
@@ -931,6 +947,8 @@ public class MainActivity extends Activity {
     private static String defaultSound(String res) {
         switch (res) {
             case "multi": return "multi";
+            case "again": return "siren";
+            case "late": return "late";
             case "bag": return "double";
             case "duplicate": return "error";
             case "not_found": return "warn";
@@ -965,10 +983,10 @@ public class MainActivity extends Activity {
                         store.markSent(s.cid, sc.optString("res"), sc.optLong("id"), sc.optString("t"));
                         any = true;
                         final String cid = s.cid, sres = sc.optString("res"), local = s.localRes;
-                        final JSONObject pk = r.optJSONObject("packet"), first = r.optJSONObject("first");
+                        final JSONObject pk = r.optJSONObject("packet"), first = r.optJSONObject("first"), late = r.optJSONObject("late");
                         final long sid = sc.optLong("id");
                         post(new Runnable() {
-                            @Override public void run() { confirmed(cid, sid, sres, local, pk, first); }
+                            @Override public void run() { confirmed(cid, sid, sres, local, pk, first, late); }
                         });
                     }
                     online = true;
@@ -988,20 +1006,28 @@ public class MainActivity extends Activity {
 
     private final Runnable lightRefresh = new Runnable() { @Override public void run() { refresh(false); } };
 
-    private void confirmed(String cid, long sid, String sres, String local, JSONObject pk, JSONObject first) {
+    private void confirmed(String cid, long sid, String sres, String local, JSONObject pk, JSONObject first, JSONObject late) {
         if ("undone".equals(sres)) {              // the admin cleared this scan: drop it here too
             store.markUndone(cid);
             for (int k = scans.size() - 1; k >= 0; k--) if (cid.equals(scans.get(k).cid)) scans.remove(k);
             renderCounts(); renderPrev(); renderTask();
             return;
         }
-        for (Item i : scans) if (cid.equals(i.cid)) { i.pending = false; i.id = sid; i.res = sres; }
-        if (!sres.equals(local) && last != null && cid.equals(last.cid)) {
+        boolean newLate = false;
+        for (Item i : scans) if (cid.equals(i.cid)) {
+            i.pending = false; i.id = sid; i.res = sres;
+            if ("ok".equals(sres) && late != null && i.late == null) { i.late = late; newLate = true; }
+        }
+        if ((!sres.equals(local) || newLate) && last != null && cid.equals(last.cid)) {
             JSONObject sp = pk != null ? fromServerPacket(pk) : null;
-            feedback("ok".equals(sres) && pieces(sp) > 1 ? "multi" : sres);   // another phone scanned it first, or the list changed
+            // another phone scanned it first, the list changed, or it was received on an earlier day
+            feedback("ok".equals(sres) && last.late != null ? "late" : "ok".equals(sres) && pieces(sp) > 1 ? "multi" : sres);
             Item f = null;
-            if (first != null) { f = new Item(); f.at = first.optDouble("at"); f.by = first.optString("by"); }
-            showResult(last, pk != null ? fromServerPacket(pk) : null, f);
+            if (first != null) {
+                f = new Item(); f.at = first.optDouble("at"); f.by = first.optString("by");
+                f.fday = first.optString("day"); f.fpod = first.optJSONArray("pod");
+            }
+            showResult(last, sp, f);
         }
         renderCounts(); renderPrev(); renderTask();
     }
@@ -1138,10 +1164,17 @@ public class MainActivity extends Activity {
         switch (res == null ? "" : res) {
             case "ok": return Ui.OK;
             case "duplicate": return Ui.ERR;
+            case "again": return 0xFF7F1D1D;
             case "not_found": return Ui.WARN;
             case "bag": return 0xFF2563EB;
             default: return Ui.GREY;
         }
+    }
+
+    static String days(JSONArray a) {
+        StringBuilder b = new StringBuilder();
+        if (a != null) for (int k = 0; k < a.length(); k++) { if (k > 0) b.append(", "); b.append(Ui.day(a.optString(k))); }
+        return b.toString();
     }
 
     /** an unknown label scanned again (no packet) - shown as "not in list", not "already scanned" */
@@ -1151,6 +1184,7 @@ public class MainActivity extends Activity {
         switch (res == null ? "" : res) {
             case "ok": return "OK";
             case "duplicate": return "ALREADY SCANNED";
+            case "again": return "RECEIVED BEFORE - KEEP ASIDE";
             case "not_found": return "NOT IN FLIPKART LIST";
             case "rescan": return "SCAN AGAIN";
             case "undone": return "UNDONE";
@@ -1197,6 +1231,7 @@ public class MainActivity extends Activity {
         if ("duplicate".equals(it.res)) head = again ? "⚠ NOT IN LIST - scanned again" : "✖ ALREADY SCANNED";
         if ("rescan".equals(it.res)) head = "↻ SCAN AGAIN";
         if ("bag".equals(it.res)) head = "🛍 BAG LABEL - open the bag";
+        if ("again".equals(it.res)) head = "⛔ RECEIVED BEFORE - KEEP ASIDE";
         LinearLayout hr = Ui.row(this);
         hr.setBackgroundColor(col);
         hr.setPadding(Ui.dp(12), Ui.dp(8), Ui.dp(12), Ui.dp(8));
@@ -1204,8 +1239,27 @@ public class MainActivity extends Activity {
         hr.addView(ht, Ui.lp(0, -2, 1));
         String right = Ui.time(it.at);
         if (first != null) right = "first " + Ui.time(first.at) + (first.by.isEmpty() ? "" : " by " + first.by);
+        if ("again".equals(it.res) && first != null) right = "received " + Ui.day(first.fday);
         hr.addView(Ui.text(this, right, 12, Ui.WHITE, true));
         c.addView(hr);
+        if ("again".equals(it.res)) {
+            String when = first != null ? Ui.day(first.fday) + " " + Ui.time(first.at) + (first.by.isEmpty() ? "" : " by " + first.by) : "an earlier day";
+            String pod = first != null && first.fpod != null && first.fpod.length() > 0 ? "It IS in Flipkart's POD of " + days(first.fpod) + "." : "It is not in Flipkart's POD.";
+            TextView ab = Ui.text(this, "This packet was already RECEIVED on " + when + ". " + pod +
+                    "\nKEEP THIS PACKET ASIDE - do not mix it with today's packets. It is not counted.", 15, 0xFF7F1D1D, true);
+            ab.setBackground(Ui.box(0xFFFEE2E2, 0xFFB91C1C, 0));
+            ab.setPadding(Ui.dp(12), Ui.dp(9), Ui.dp(12), Ui.dp(9));
+            c.addView(ab);
+        }
+        if ("ok".equals(it.res) && it.late != null) {
+            JSONArray lp = it.late.optJSONArray("pod");
+            TextView lb = Ui.text(this, "⏰ LATE PACKET - it was in the list of " + days(it.late.optJSONArray("lists")) +
+                    (lp != null && lp.length() > 0 ? " (Flipkart's POD of " + days(lp) + " has it)" : " and was not delivered then (not in that POD)") +
+                    ". Received now - keep a check on it.", 13, 0xFF92400E, true);
+            lb.setBackgroundColor(0xFFFEF3C7);
+            lb.setPadding(Ui.dp(12), Ui.dp(7), Ui.dp(12), Ui.dp(7));
+            c.addView(lb);
+        }
         int pc = "ok".equals(it.res) ? pieces(p) : 0;
         if (pc > 1) {
             TextView mb = Ui.text(this, "⚠ " + pc + " PIECES IN THIS PACKET - check all " + pc + " are inside", 15, Ui.WHITE, true);

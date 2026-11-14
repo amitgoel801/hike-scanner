@@ -263,6 +263,26 @@ public class StartupTest {
         ac.pause().stop().destroy();
     }
 
+    /** received on an earlier day ("ra") -> RECEIVED BEFORE (siren, keep aside); in an earlier list ("ld") -> OK, marked late */
+    @Test public void receivedBeforeAndLate() throws Exception {
+        JSONObject st = bigState(20, 0);
+        JSONArray p = st.getJSONArray("packets");
+        JSONObject a = p.getJSONObject(0), b = p.getJSONObject(1);
+        a.put("ra", new JSONObject().put("d", "2026-11-08").put("at", 1.7946e9).put("by", "ravi").put("pod", new JSONArray().put("2026-11-08")));
+        b.put("ld", "2026-11-11").put("lp", new JSONArray());
+        Store.get(ctx).put("packets:" + LOC + ":" + day, new JSONObject().put("psig", "s").put("packets", p).toString());
+        ActivityController<MainActivity> ac = Robolectric.buildActivity(MainActivity.class).setup();
+        waitIdle(2500);
+        MainActivity m = ac.get();
+        m.submit(a.getString("t"), "keyboard"); waitIdle(300);
+        assertEquals("again", resOf(m, a.getString("t")));
+        m.submit(b.getString("t"), "keyboard"); waitIdle(300);
+        assertEquals("late packet is still OK", "ok", resOf(m, b.getString("t")));
+        assertEquals("RECEIVED BEFORE - KEEP ASIDE", MainActivity.label("again"));
+        assertFalse(m.isFinishing());
+        ac.pause().stop().destroy();
+    }
+
     private static int countCode(MainActivity a, String code) throws Exception {
         Field f = MainActivity.class.getDeclaredField("scans");
         f.setAccessible(true);
