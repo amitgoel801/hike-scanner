@@ -1059,7 +1059,7 @@ public class MainActivity extends Activity {
             final Item i = t.get(k);
             JSONObject p = i.tracking.isEmpty() ? null : packets.get(i.tracking);
             LinearLayout chip = Ui.row(this);
-            chip.setBackground(Ui.box(Ui.WHITE, colorOf(i.res), 8));
+            chip.setBackground(Ui.box(Ui.WHITE, colorOf(again(i) ? "not_found" : i.res), 8));
             chip.setPadding(Ui.dp(4), Ui.dp(3), Ui.dp(8), Ui.dp(3));
             ImageView iv = new ImageView(this);
             iv.setScaleType(ImageView.ScaleType.FIT_CENTER);
@@ -1069,7 +1069,7 @@ public class MainActivity extends Activity {
             LinearLayout tx = Ui.col(this);
             tx.setPadding(Ui.dp(6), 0, 0, 0);
             tx.addView(Ui.mono(this, "#" + (k + 1) + " " + i.code, 12, Ui.INK, true));
-            tx.addView(Ui.text(this, (it != null ? it.optString("sku") : label(i.res)) + " · " + Ui.time(i.at) + (i.pending ? " ⏳" : ""), 10, Ui.INK2, false));
+            tx.addView(Ui.text(this, (it != null ? it.optString("sku") : again(i) ? "NOT IN LIST (again)" : label(i.res)) + " · " + Ui.time(i.at) + (i.pending ? " ⏳" : ""), 10, Ui.INK2, false));
             chip.addView(tx);
             LinearLayout.LayoutParams lp = new LinearLayout.LayoutParams(-2, -2);
             lp.setMargins(0, 0, Ui.dp(6), 0);
@@ -1121,6 +1121,9 @@ public class MainActivity extends Activity {
             default: return Ui.GREY;
         }
     }
+
+    /** an unknown label scanned again (no packet) - shown as "not in list", not "already scanned" */
+    static boolean again(Item i) { return "duplicate".equals(i.res) && (i.tracking == null || i.tracking.isEmpty()); }
 
     static String label(String res) {
         switch (res == null ? "" : res) {
@@ -1752,7 +1755,7 @@ public class MainActivity extends Activity {
                 Item i = list.get(k);
                 if (!"all".equals(filter) && !filter.equals(i.res)) continue;
                 JSONObject p = i.tracking.isEmpty() ? null : packets.get(i.tracking);
-                rows.addView(historyRow("#" + (k + 1), i.code, p, label(i.res), colorOf(i.res), Ui.time(i.at) + " " + i.by + (i.pending ? " ⏳" : "")));
+                rows.addView(historyRow("#" + (k + 1), i.code, p, again(i) ? "NOT IN LIST (again)" : label(i.res), colorOf(again(i) ? "not_found" : i.res), Ui.time(i.at) + " " + i.by + (i.pending ? " ⏳" : "")));
                 shown++;
             }
             if (shown == 0) rows.addView(Ui.text(this, "Nothing here yet.", 13, Ui.INK2, false));
