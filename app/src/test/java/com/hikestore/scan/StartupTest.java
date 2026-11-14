@@ -261,6 +261,44 @@ public class StartupTest {
         ac.pause().stop().destroy();
     }
 
+    private static int countCode(MainActivity a, String code) throws Exception {
+        Field f = MainActivity.class.getDeclaredField("scans");
+        f.setAccessible(true);
+        int n = 0;
+        for (Object it : (java.util.List<?>) f.get(a)) {
+            Field c = it.getClass().getDeclaredField("code"); c.setAccessible(true);
+            if (code.equals(c.get(it))) n++;
+        }
+        return n;
+    }
+
+    /** a handheld sending every scan twice (as keys AND as a broadcast): ONE scan, shown OK - never "already scanned" */
+    @Test public void doubleReadIsOneScan() throws Exception {
+        JSONObject st = bigState(20, 0);
+        Store.get(ctx).put("packets:" + LOC + ":" + day, new JSONObject().put("psig", "s").put("packets", st.getJSONArray("packets")).toString());
+        ActivityController<MainActivity> ac = Robolectric.buildActivity(MainActivity.class).setup();
+        waitIdle(2500);
+        MainActivity m = ac.get();
+        String t = st.getJSONArray("packets").getJSONObject(3).getString("t");
+        m.submit(t, "keyboard");
+        m.submit(t, "broadcast");                      // the same read, a moment later
+        waitIdle(300);
+        assertEquals(1, countCode(m, t));
+        assertEquals("ok", resOf(m, t));
+        // the camera switched on and off again does not break anything
+        ac.get().getSharedPreferences("device", Context.MODE_PRIVATE).edit().putBoolean("camera", false).commit();
+        org.robolectric.Shadows.shadowOf(RuntimeEnvironment.getApplication()).grantPermissions(android.Manifest.permission.CAMERA);
+        Field tb = MainActivity.class.getDeclaredField("camBtn"); tb.setAccessible(true);
+        ((android.view.View) tb.get(m)).performClick(); waitIdle(800);
+        Field cs = MainActivity.class.getDeclaredField("camScan"); cs.setAccessible(true);
+        assertNotNull("camera panel shown", cs.get(m));
+        ac.pause(); waitIdle(300); ac.resume(); waitIdle(500);
+        ((android.view.View) tb.get(m)).performClick(); waitIdle(500);
+        assertEquals("camera panel gone", null, cs.get(m));
+        assertFalse(m.isFinishing());
+        ac.pause().stop().destroy();
+    }
+
     @Test public void homeScreenOpens() throws Exception {
         Crash.save("The app closed (crash) - thread main", "java.lang.IllegalStateException: test");
         ActivityController<HomeActivity> ac = Robolectric.buildActivity(HomeActivity.class).setup();

@@ -69,6 +69,12 @@ public class MainActivity extends Activity {
     private boolean resumedBefore = false;
     private int loadGen = 0;
     private final List<String[]> waiting = new ArrayList<>();       // scans made while the list was still loading
+    private CameraScan camScan;                          // camera mode (phone camera reads the barcode)
+    private TextView camBtn;
+    private LinearLayout bodyL;
+    private String lastSubmitCode = "";
+    private long lastSubmitAt;
+    private final List<String> olderGot = new ArrayList<>();         // scanned today, but from an earlier day's list
     private Store store;
     private Sounds sounds;
     private SharedPreferences dev;
@@ -203,6 +209,7 @@ public class MainActivity extends Activity {
     @Override protected void onResume() {
         super.onResume();
         if (store == null) return;
+        if (dev != null && bodyL != null && dev.getBoolean("camera", false)) applyCamera();
         IntentFilter f = new IntentFilter();
         for (String[] s : SCANNER_INTENTS) f.addAction(s[0]);
         if (Build.VERSION.SDK_INT >= 33) registerReceiver(scanReceiver, f, 2 /* RECEIVER_EXPORTED */);
@@ -217,6 +224,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onPause() {
         super.onPause();
+        if (camScan != null) camScan.stop();
         if (store == null) return;
         try { unregisterReceiver(scanReceiver); } catch (Exception ignored) { }
         ui.removeCallbacks(ticker);          // no list refreshes while minimised (scans still go out)
@@ -224,6 +232,7 @@ public class MainActivity extends Activity {
 
     @Override protected void onDestroy() {
         destroyed = true;
+        if (camScan != null) camScan.release();
         ui.removeCallbacksAndMessages(null); // stop every timer of this screen (they used to keep running)
         bg.shutdownNow();
         watch.shutdownNow();
@@ -316,6 +325,9 @@ public class MainActivity extends Activity {
         dayText.setPadding(Ui.dp(8), Ui.dp(6), Ui.dp(8), Ui.dp(6));
         dayText.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { chooseDay(); } });
         tr.addView(dayText);
+        camBtn = topIcon("📷");
+        camBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { toggleCamera(); } });
+        tr.addView(camBtn);
         TextView refreshBtn = topIcon("⟳");
         refreshBtn.setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { syncFlipkart(); } });
         tr.addView(refreshBtn);
@@ -331,6 +343,7 @@ public class MainActivity extends Activity {
         LinearLayout body = Ui.col(this);
         body.setPadding(Ui.dp(8), Ui.dp(6), Ui.dp(8), 0);
         root.addView(body, Ui.lp(-1, 0, 1));
+        bodyL = body;
 
         banner = Ui.text(this, "", 13, Ui.WARN, true);
         banner.setPadding(Ui.dp(10), Ui.dp(6), Ui.dp(10), Ui.dp(6));
@@ -345,6 +358,7 @@ public class MainActivity extends Activity {
         cExtra = counter(cr, "EXTRA", Ui.WARN);
         cDup = counter(cr, "DUP.", Ui.ERR);
         body.addView(cr);
+        ((View) cGot.getParent()).setOnClickListener(new View.OnClickListener() { @Override public void onClick(View v) { explainGot(); } });
 
         // scan box + history
         LinearLayout sr = Ui.row(this);
@@ -848,6 +862,13 @@ public class MainActivity extends Activity {
         }
         final String code = normalize(raw);
         if (code.isEmpty()) return;
+        long nowMs = android.os.SystemClock.uptimeMillis();
+        if (!"manual".equals(via) && code.equals(lastSubmitCode) && nowMs - lastSubmitAt < 2000) {
+            lastSubmitAt = nowMs;          // the same read arriving again (keys + broadcast, double trigger): not a new scan
+            return;
+        }
+        lastSubmitCode = code;
+        lastSubmitAt = nowMs;
         if (paused()) {
             sounds.play("rescan"); sounds.buzz("rescan");
             toast("Task is paused - press Resume to scan");
@@ -1026,6 +1047,7 @@ public class MainActivity extends Activity {
     private void renderCounts() {
         if (cExp == null) return;
         int exp = 0, got = 0, older = 0, dup = 0;
+        olderGot.clear();
         Set<String> gotSet = new HashSet<>(), nf = new HashSet<>();
         int gotX = 0;
         // "x" = Flipkart took the packet off today's list: not expected any more (still OK if scanned)
@@ -1033,7 +1055,7 @@ public class MainActivity extends Activity {
         for (Item i : scans) {
             if ("ok".equals(i.res) && !i.tracking.isEmpty() && gotSet.add(i.tracking)) {
                 JSONObject p = packets.get(i.tracking);
-                if (p != null && !day.equals(p.optString("d"))) older++;
+                if (p != null && !day.equals(p.optString("d"))) { older++; olderGot.add(i.tracking + " (list of " + Ui.day(p.optString("d")) + ")"); }
                 else { got++; if (p != null && p.optInt("x") == 1) gotX++; }
             }
             if ("not_found".equals(i.res)) nf.add(i.code);
@@ -1288,6 +1310,62 @@ public class MainActivity extends Activity {
         }
         c.addView(ar);
         card.addView(c, new LinearLayout.LayoutParams(-1, -2));
+    }
+
+    // ================================================================== camera mode
+    /** 📷 at the top: the phone's camera reads the barcodes (for phones without a built-in scanner) */
+    private void toggleCamera() {
+        boolean on = !dev.getBoolean("camera", false);
+        dev.edit().putBoolean("camera", on).apply();
+        applyCamera();
+        if (on) toast("Camera mode on - hold the long barcode inside the red box");
+    }
+
+    private void applyCamera() {
+        boolean on = dev.getBoolean("camera", false);
+        if (on && Build.VERSION.SDK_INT >= 23
+                && checkSelfPermission(android.Manifest.permission.CAMERA) != android.content.pm.PackageManager.PERMISSION_GRANTED) {
+            requestPermissions(new String[]{android.Manifest.permission.CAMERA}, 77);
+            return;
+        }
+        if (on) {
+            if (camScan == null) {
+                camScan = new CameraScan(this, new CameraScan.Listener() {
+                    @Override public boolean known(String code) {
+                        String c = normalize(code);
+                        return localMatch(c) != null || bags.containsKey(c);
+                    }
+
+                    @Override public void onCode(String code) { submit(code, "camera"); }
+                });
+                int h = (int) (getResources().getDisplayMetrics().heightPixels * 0.34);
+                bodyL.addView(camScan.view, 1, Ui.lpm(-1, h, 0, 0, 0, 6));
+            }
+            camScan.start();
+            camBtn.setBackground(Ui.box(Ui.ACCENT, 0, 10));
+        } else {
+            if (camScan != null) {
+                camScan.release();
+                bodyL.removeView(camScan.view);
+                camScan = null;
+            }
+            camBtn.setBackground(null);
+            focusInput();
+        }
+    }
+
+    /** what GOT "1290+4" means */
+    private void explainGot() {
+        String t = cGot.getText().toString();
+        StringBuilder m = new StringBuilder();
+        int plus = t.indexOf('+');
+        m.append(plus > 0 ? t.substring(0, plus) : t).append(" = packets of this day's list that are received (scanned, or accepted by hand).");
+        if (plus > 0) {
+            m.append("\n\n+").append(t.substring(plus + 1)).append(" = packets from an EARLIER day's list that came in today (late packets). ")
+             .append("They count as received for their own day:\n");
+            for (int k = 0; k < olderGot.size() && k < 30; k++) m.append("\n• ").append(olderGot.get(k));
+        }
+        new AlertDialog.Builder(this).setTitle("GOT " + t).setMessage(m.toString()).setPositiveButton("OK", null).show();
     }
 
     // ================================================================== a label that is not in the list -> its packet
@@ -1841,6 +1919,11 @@ public class MainActivity extends Activity {
 
     @Override public void onRequestPermissionsResult(int req, String[] perms, int[] grants) {
         super.onRequestPermissionsResult(req, perms, grants);
+        if (req == 77) {
+            if (grants.length > 0 && grants[0] == android.content.pm.PackageManager.PERMISSION_GRANTED) applyCamera();
+            else { dev.edit().putBoolean("camera", false).apply(); applyCamera(); toast("Camera permission is needed for camera mode"); }
+            return;
+        }
         Problems.onPermission(this, req, grants);
     }
 
